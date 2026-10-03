@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chat | Secure Chat App</title>
+    <link rel="stylesheet" href="/css/style.css" />
+  </head>
+  <body>
+    <main class="chat-layout">
+      <aside class="sidebar card">
+        <div class="sidebar-header">
+          <h2>Users</h2>
+          <button id="logoutButton" class="secondary">Logout</button>
+        </div>
+        <p id="currentUser" class="subtitle"></p>
+        <ul id="usersList" class="users-list"></ul>
+      </aside>
+
+      <section class="chat-panel card">
+        <header class="chat-header">
+          <h2 id="selectedUserName">Select a user to start chatting</h2>
+        </header>
+
+        <div id="messages" class="messages"></div>
+
+        <form id="messageForm" class="message-form">
+          <input id="messageInput" type="text" placeholder="Type message..." autocomplete="off" required />
+          <button type="submit">Send</button>
+        </form>
+        <p id="chatError" class="error"></p>
+      </section>
+    </main>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/js/chat.js"></script>
+  </body>
+</html>

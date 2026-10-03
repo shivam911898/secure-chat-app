@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Register | Secure Chat App</title>
+    <link rel="stylesheet" href="/css/style.css" />
+  </head>
+  <body>
+    <main class="auth-container">
+      <section class="card">
+        <h1>Create Account</h1>
+        <p class="subtitle">Register to start secure one-to-one chat.</p>
+        <form id="registerForm" class="form">
+          <label for="name">Name</label>
+          <input id="name" type="text" required />
+
+          <label for="email">Email</label>
+          <input id="email" type="email" required />
+
+          <label for="password">Password</label>
+          <input id="password" type="password" minlength="6" required />
+
+          <button type="submit">Register</button>
+          <p id="errorMessage" class="error"></p>
+        </form>
+        <p>Already registered? <a href="/login.html">Login</a></p>
+      </section>
+    </main>
+    <script src="/js/register.js"></script>
+  </body>
+</html>
