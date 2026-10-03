@@ -9,6 +9,7 @@ const authRoutes = require('./routes/authRoutes');
 const userRoutes = require('./routes/userRoutes');
 const messageRoutes = require('./routes/messageRoutes');
 const registerChatSocket = require('./sockets/chatSocket');
+const { apiRateLimit } = require('./middleware/rateLimitMiddleware');
 
 dotenv.config();
 
@@ -24,6 +25,7 @@ connectDB();
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+app.use(apiRateLimit);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);

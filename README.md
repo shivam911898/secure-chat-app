@@ -16,6 +16,7 @@ Beginner-friendly secure real-time one-to-one chat application built with Common
 ## Tech Stack
 
 - Backend: Node.js, Express.js, Socket.IO, Mongoose
+- API protection: express-rate-limit
 - Auth & Security: JWT, bcryptjs, Node `crypto` (AES-256-GCM)
 - Frontend: Vanilla HTML, CSS, JavaScript
 - Config: dotenv
@@ -175,3 +176,4 @@ All protected endpoints require an `Authorization` header containing a JWT in th
 - JWT is required for protected routes and socket messaging.
 - Message data is encrypted at rest in DB.
 - API and socket errors avoid exposing sensitive internal details.
+- API requests are rate-limited to reduce brute-force and abuse risk.

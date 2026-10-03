@@ -28,7 +28,8 @@ const storeEncryptedMessage = async ({ senderId, receiverId, message }) => {
     throw error;
   }
 
-  const receiverExists = await User.exists({ _id: receiverId });
+  const receiverObjectId = new mongoose.Types.ObjectId(receiverId);
+  const receiverExists = await User.exists({ _id: receiverObjectId });
 
   if (!receiverExists) {
     const error = new Error('Receiver not found.');
@@ -40,7 +41,7 @@ const storeEncryptedMessage = async ({ senderId, receiverId, message }) => {
 
   const stored = await Message.create({
     sender: senderId,
-    receiver: receiverId,
+    receiver: receiverObjectId,
     encryptedMessage: encrypted.encryptedMessage,
     iv: encrypted.iv,
     authTag: encrypted.authTag,
@@ -70,7 +71,9 @@ const getConversation = async (req, res) => {
       return res.status(400).json({ message: 'Invalid user ID.' });
     }
 
-    const otherUser = await User.findById(userId).select('_id');
+    const otherUserId = new mongoose.Types.ObjectId(userId);
+    const currentUserId = new mongoose.Types.ObjectId(req.user.id);
+    const otherUser = await User.findById(otherUserId).select('_id');
 
     if (!otherUser) {
       return res.status(404).json({ message: 'User not found.' });
@@ -78,8 +81,8 @@ const getConversation = async (req, res) => {
 
     const messages = await Message.find({
       $or: [
-        { sender: req.user.id, receiver: userId },
-        { sender: userId, receiver: req.user.id },
+        { sender: currentUserId, receiver: otherUserId },
+        { sender: otherUserId, receiver: currentUserId },
       ],
     })
       .sort({ createdAt: 1 })
