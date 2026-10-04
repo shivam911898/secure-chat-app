@@ -11,6 +11,8 @@ Beginner-friendly secure real-time one-to-one chat application built with Common
 - One-to-one real-time messaging via Socket.IO
 - Persistent conversation history in MongoDB
 - Message encryption at rest using AES-256-GCM (server-side)
+- Unread-message badge for chats that are not open
+- Delivery ticks on your own messages: Sent, Delivered, Seen
 - Clean modular folder structure for learning
 
 ## Tech Stack
@@ -149,6 +151,29 @@ All protected endpoints require an `Authorization` header containing a JWT in th
 5. Server validates sender, encrypts message, stores in MongoDB.
 6. Server emits `messageReceived` to sender and receiver.
 7. Client listens to `messageReceived` and updates chat UI.
+
+## Message Status (Sent / Delivered / Seen)
+
+Every message stores a `status` that only ever moves forward:
+
+| Status | Meaning |
+| --- | --- |
+| `sent` | Stored in MongoDB. The receiver was offline. |
+| `delivered` | The receiver's socket is connected, so the message reached their device. |
+| `seen` | The receiver opened that conversation. |
+
+How the transitions happen:
+
+- `sent` is set when the message is created.
+- On `connection`, the server flushes everything queued for that user to `delivered`
+  and emits `messageStatus` to each sender.
+- When the client opens a conversation it emits `conversationOpened` with
+  `{ userId }`; the server marks those messages `seen` and emits `messageStatus`
+  to the other side.
+- The sender's own bubbles render `✓ Sent`, `✓✓ Delivered`, `✓✓ Seen` and update live.
+
+Incoming messages for a conversation that is not open increment an unread badge in
+the sidebar; opening or receiving in the open chat clears it.
 
 ## JWT Authentication (Simple Explanation)
 

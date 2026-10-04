@@ -1,6 +1,11 @@
 const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
-const { storeEncryptedMessage, formatMessage } = require('../controllers/messageController');
+const {
+  storeEncryptedMessage,
+  formatMessage,
+  markMessagesDelivered,
+  markMessagesSeen,
+} = require('../controllers/messageController');
 
 const connectedUsers = new Map();
 
@@ -56,6 +61,44 @@ const registerChatSocket = (io) => {
   io.on('connection', (socket) => {
     attachSocketToUser(socket.userId, socket.id);
 
+    // Anything that was only "sent" while this user was offline is now delivered.
+    markMessagesDelivered({ viewerId: socket.userId })
+      .then(({ messageIds, senderIds }) => {
+        if (!messageIds.length) {
+          return;
+        }
+
+        senderIds.forEach((senderId) => {
+          emitToUser(io, senderId, 'messageStatus', { messageIds, status: 'delivered' });
+        });
+      })
+      .catch((error) => {
+        // eslint-disable-next-line no-console
+        console.error('Failed to mark pending messages as delivered:', error);
+      });
+
+    socket.on('conversationOpened', async (payload = {}) => {
+      try {
+        const { userId } = payload;
+
+        if (!userId || !mongoose.isValidObjectId(userId)) {
+          return;
+        }
+
+        const messageIds = await markMessagesSeen({
+          viewerId: socket.userId,
+          otherUserId: userId,
+        });
+
+        if (messageIds.length) {
+          emitToUser(io, userId, 'messageStatus', { messageIds, status: 'seen' });
+        }
+      } catch (error) {
+        // eslint-disable-next-line no-console
+        console.error('Failed to mark conversation as seen:', error);
+      }
+    });
+
     socket.on('privateMessage', async (payload = {}) => {
       try {
         const { receiverId, message } = payload;
@@ -77,6 +120,20 @@ const registerChatSocket = (io) => {
         });
 
         const messageDoc = storedMessage.toObject();
+
+        // Receiver is online -> flush everything pending for them (incl. this message)
+        // to "delivered" and tell each sender about the new status.
+        if (connectedUsers.has(String(receiverId))) {
+          const { messageIds, senderIds } = await markMessagesDelivered({ viewerId: receiverId });
+
+          if (messageIds.some((id) => String(id) === String(messageDoc._id))) {
+            messageDoc.status = 'delivered';
+          }
+
+          senderIds.forEach((senderId) => {
+            emitToUser(io, senderId, 'messageStatus', { messageIds, status: 'delivered' });
+          });
+        }
 
         // Each recipient needs its own copy so isOwnMessage is correct for both sides.
         emitToUser(io, receiverId, 'messageReceived', formatMessage(messageDoc, receiverId));

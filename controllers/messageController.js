@@ -45,9 +45,49 @@ const storeEncryptedMessage = async ({ senderId, receiverId, message }) => {
     encryptedMessage: encrypted.encryptedMessage,
     iv: encrypted.iv,
     authTag: encrypted.authTag,
+    status: 'sent',
   });
 
   return stored;
+};
+
+// Returns the ids of messages that just moved to "delivered" (receiver online).
+const markMessagesDelivered = async ({ viewerId }) => {
+  const viewer = new mongoose.Types.ObjectId(viewerId);
+  // `$in: [null]` also matches documents written before the `status` field existed.
+  const pending = await Message.find({
+    receiver: viewer,
+    status: { $in: ['sent', null] },
+  }).select('_id sender');
+
+  if (!pending.length) {
+    return { messageIds: [], senderIds: [] };
+  }
+
+  const messageIds = pending.map((message) => message._id);
+  await Message.updateMany({ _id: { $in: messageIds } }, { $set: { status: 'delivered' } });
+
+  const senderIds = [...new Set(pending.map((message) => String(message.sender)))];
+  return { messageIds, senderIds };
+};
+
+// Returns the ids of messages that just moved to "seen" (viewer opened the chat).
+const markMessagesSeen = async ({ viewerId, otherUserId }) => {
+  const viewer = new mongoose.Types.ObjectId(viewerId);
+  const other = new mongoose.Types.ObjectId(otherUserId);
+  const pending = await Message.find({
+    sender: other,
+    receiver: viewer,
+    status: { $ne: 'seen' },
+  }).select('_id');
+
+  if (!pending.length) {
+    return [];
+  }
+
+  const messageIds = pending.map((message) => message._id);
+  await Message.updateMany({ _id: { $in: messageIds } }, { $set: { status: 'seen' } });
+  return messageIds;
 };
 
 const formatMessage = (messageDoc, currentUserId) => ({
@@ -58,9 +98,9 @@ const formatMessage = (messageDoc, currentUserId) => ({
     encryptedMessage: messageDoc.encryptedMessage,
     iv: messageDoc.iv,
     authTag: messageDoc.authTag,
-  }),
-  timestamp: messageDoc.createdAt,
-  isOwnMessage: String(messageDoc.sender) === String(currentUserId),
+  }),    timestamp: messageDoc.createdAt,
+    status: messageDoc.status || 'sent',
+    isOwnMessage: String(messageDoc.sender) === String(currentUserId),
 });
 
 const getConversation = async (req, res) => {
@@ -128,4 +168,6 @@ module.exports = {
   sendMessage,
   storeEncryptedMessage,
   formatMessage,
+  markMessagesDelivered,
+  markMessagesSeen,
 };
