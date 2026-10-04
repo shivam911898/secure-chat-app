@@ -14,15 +14,39 @@ const messageSchema = new mongoose.Schema(
     },
     encryptedMessage: {
       type: String,
-      required: true,
+      default: '',
     },
     iv: {
       type: String,
-      required: true,
+      // Attachment-only messages carry their own IV inside `attachment`.
+      required: function () {
+        return !this.attachment;
+      },
     },
     authTag: {
       type: String,
-      required: true,
+      required: function () {
+        return !this.attachment;
+      },
+    },
+    attachment: {
+      data: { type: Buffer },
+      iv: { type: String },
+      authTag: { type: String },
+      contentType: { type: String },
+      size: { type: Number },
+      name: { type: String },
+    },
+    replyTo: {
+      message: { type: mongoose.Schema.Types.ObjectId, ref: 'Message' },
+      sender: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      // The quoted text is encrypted exactly like the message body.
+      encryptedPreview: { type: String },
+      iv: { type: String },
+      authTag: { type: String },
+    },
+    editedAt: {
+      type: Date,
     },
     status: {
       type: String,

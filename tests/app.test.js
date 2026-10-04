@@ -50,12 +50,24 @@ const connectSocket = (token) =>
       transports: ['websocket'],
       reconnection: false,
     });
-    const received = { messages: [], statuses: [], typing: [], presence: [], calls: [] };
+    const received = {
+      messages: [],
+      statuses: [],
+      typing: [],
+      presence: [],
+      calls: [],
+      errors: [],
+      edits: [],
+      missedCalls: [],
+    };
 
     socket.on('messageReceived', (payload) => received.messages.push(payload));
     socket.on('messageStatus', (payload) => received.statuses.push(payload));
     socket.on('typing', (payload) => received.typing.push(payload));
     socket.on('presenceUpdate', (payload) => received.presence.push(payload));
+    socket.on('chatError', (payload) => received.errors.push(payload));
+    socket.on('messageEdited', (payload) => received.edits.push(payload));
+    socket.on('callMissed', (payload) => received.missedCalls.push(payload));
 
     ['call:invite', 'call:accept', 'call:reject', 'call:hangup', 'call:signal'].forEach(
       (event) => {
@@ -602,5 +614,512 @@ describe('video call signalling', () => {
       (item) => item.payload.callId === 'self-call' || item.payload.callId === 'bad-call',
     );
     expect(leaked).toHaveLength(0);
+  });
+});
+
+describe('attachments', () => {
+  // 1x1 transparent PNG
+  const PNG_BASE64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  let sender;
+  let receiver;
+  let stranger;
+  let attachmentMessageId;
+
+  beforeAll(async () => {
+    sender = await registerUser('file-sender');
+    receiver = await registerUser('file-receiver');
+    stranger = await registerUser('file-stranger');
+  });
+
+  test('sends an image with no text and returns a download url', async () => {
+    const res = await request(BASE_URL)
+      .post('/api/messages')
+      .set('Authorization', `Bearer ${sender.token}`)
+      .send({
+        receiverId: receiver.user.id,
+        attachment: { name: 'pixel.png', type: 'image/png', data: PNG_BASE64 },
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.message).toBe('');
+    expect(res.body.attachment).toMatchObject({
+      name: 'pixel.png',
+      contentType: 'image/png',
+    });
+    expect(res.body.attachment.url).toEqual(expect.any(String));
+    attachmentMessageId = String(res.body.id);
+  });
+
+  test('serves the original bytes, but only to the two participants', async () => {
+    const asSender = await request(BASE_URL)
+      .get(`/api/messages/${attachmentMessageId}/attachment`)
+      .set('Authorization', `Bearer ${sender.token}`);
+
+    expect(asSender.status).toBe(200);
+    expect(asSender.headers['content-type']).toContain('image/png');
+    expect(Buffer.from(asSender.body).toString('base64')).toBe(PNG_BASE64);
+
+    const asReceiver = await request(BASE_URL)
+      .get(`/api/messages/${attachmentMessageId}/attachment`)
+      .set('Authorization', `Bearer ${receiver.token}`);
+    expect(asReceiver.status).toBe(200);
+
+    const asStranger = await request(BASE_URL)
+      .get(`/api/messages/${attachmentMessageId}/attachment`)
+      .set('Authorization', `Bearer ${stranger.token}`);
+    expect(asStranger.status).toBe(403);
+
+    const anonymous = await request(BASE_URL).get(
+      `/api/messages/${attachmentMessageId}/attachment`,
+    );
+    expect(anonymous.status).toBe(401);
+  });
+
+  test('stores text and an attachment together', async () => {
+    const res = await request(BASE_URL)
+      .post('/api/messages')
+      .set('Authorization', `Bearer ${sender.token}`)
+      .send({
+        receiverId: receiver.user.id,
+        message: 'caption with the picture',
+        attachment: { name: 'pixel.png', type: 'image/png', data: PNG_BASE64 },
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.message).toBe('caption with the picture');
+    expect(res.body.attachment.name).toBe('pixel.png');
+  });
+
+  test('rejects an unsupported file type', async () => {
+    const res = await request(BASE_URL)
+      .post('/api/messages')
+      .set('Authorization', `Bearer ${sender.token}`)
+      .send({
+        receiverId: receiver.user.id,
+        attachment: { name: 'page.html', type: 'text/html', data: PNG_BASE64 },
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe('This file type is not allowed.');
+  });
+
+  test('rejects malformed base64', async () => {
+    const res = await request(BASE_URL)
+      .post('/api/messages')
+      .set('Authorization', `Bearer ${sender.token}`)
+      .send({
+        receiverId: receiver.user.id,
+        attachment: { name: 'pixel.png', type: 'image/png', data: 'not!base64' },
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe('Attachment data is not valid base64.');
+  });
+
+  test('rejects a payload over 4 MB', async () => {
+    const res = await request(BASE_URL)
+      .post('/api/messages')
+      .set('Authorization', `Bearer ${sender.token}`)
+      .send({
+        receiverId: receiver.user.id,
+        attachment: {
+          name: 'huge.png',
+          type: 'image/png',
+          // 5.6 M base64 chars is over the 4 MB decoded cap but still fits
+          // under the 6 MB JSON body limit, so the app-level check runs first.
+          data: 'A'.repeat(5600000),
+        },
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe('Attachment is too large (max 4 MB).');
+  });
+
+  test('delivers an attachment in realtime over the socket', async () => {
+    const alice = await registerUser('att-alice');
+    const bob = await registerUser('att-bob');
+    const aliceSocket = await connectSocket(alice.token);
+    const bobSocket = await connectSocket(bob.token);
+
+    aliceSocket.socket.emit('privateMessage', {
+      receiverId: bob.user.id,
+      message: 'look at this',
+      attachment: { name: 'pixel.png', type: 'image/png', data: PNG_BASE64 },
+    });
+
+    const received = await waitFor(
+      () => bobSocket.received.messages.find((m) => m.message === 'look at this'),
+      5000,
+      'the attachment message',
+    );
+
+    expect(received.attachment).toMatchObject({ name: 'pixel.png', contentType: 'image/png' });
+    expect(received.attachment.url).toEqual(expect.any(String));
+
+    aliceSocket.socket.close();
+    bobSocket.socket.close();
+  });
+});
+
+describe('missed calls', () => {
+  test('an unanswered call is recorded and reported to the callee', async () => {
+    const caller = await registerUser('mc-caller');
+    const callee = await registerUser('mc-callee');
+    const callerSocket = await connectSocket(caller.token);
+    const calleeSocket = await connectSocket(callee.token);
+
+    const callId = `call-${Date.now()}`;
+    callerSocket.socket.emit('call:invite', { to: callee.user.id, callId });
+
+    await waitFor(
+      () =>
+        calleeSocket.received.calls.find(
+          (call) => call.event === 'call:invite' && call.payload.callId === callId,
+        ),
+      5000,
+      'the callee to receive the invite',
+    );
+
+    // Nobody answers; the caller hangs up while the call is still ringing.
+    callerSocket.socket.emit('call:hangup', { to: callee.user.id, callId });
+
+    const missedEvent = await waitFor(
+      () => calleeSocket.received.missedCalls.find((m) => m.from === caller.user.id),
+      5000,
+      'the missed-call event',
+    );
+    expect(missedEvent.from).toBe(caller.user.id);
+
+    const list = await request(BASE_URL)
+      .get('/api/calls/missed')
+      .set('Authorization', `Bearer ${callee.token}`);
+    expect(list.status).toBe(200);
+
+    const record = list.body.find((item) => String(item.from) === String(caller.user.id));
+    expect(record).toBeDefined();
+    expect(record.name).toBe(caller.user.name);
+
+    // Opening the conversation clears it.
+    await request(BASE_URL)
+      .post('/api/calls/seen')
+      .set('Authorization', `Bearer ${callee.token}`)
+      .send({ from: caller.user.id })
+      .expect(200);
+
+    const after = await request(BASE_URL)
+      .get('/api/calls/missed')
+      .set('Authorization', `Bearer ${callee.token}`);
+    expect(after.body.find((item) => String(item.from) === String(caller.user.id))).toBeUndefined();
+
+    callerSocket.socket.close();
+    calleeSocket.socket.close();
+  });
+
+  test('an answered call does not show up as missed', async () => {
+    const caller = await registerUser('ac-caller');
+    const callee = await registerUser('ac-callee');
+    const callerSocket = await connectSocket(caller.token);
+    const calleeSocket = await connectSocket(callee.token);
+
+    const callId = `call-${Date.now()}`;
+    callerSocket.socket.emit('call:invite', { to: callee.user.id, callId });
+
+    await waitFor(
+      () => calleeSocket.received.calls.find((call) => call.event === 'call:invite'),
+      5000,
+      'the invite',
+    );
+
+    calleeSocket.socket.emit('call:accept', { to: caller.user.id, callId });
+    await waitFor(
+      () => callerSocket.received.calls.find((call) => call.event === 'call:accept'),
+      5000,
+      'the accept',
+    );
+    calleeSocket.socket.emit('call:hangup', { to: caller.user.id, callId });
+    await sleep(300);
+
+    const list = await request(BASE_URL)
+      .get('/api/calls/missed')
+      .set('Authorization', `Bearer ${callee.token}`);
+    expect(list.status).toBe(200);
+    expect(list.body.find((item) => String(item.from) === String(caller.user.id))).toBeUndefined();
+
+    callerSocket.socket.close();
+    calleeSocket.socket.close();
+  });
+});
+
+describe('replying to messages', () => {
+  test('stores the reply with a preview both sides can read', async () => {
+    const alice = await registerUser('reply-alice');
+    const bob = await registerUser('reply-bob');
+
+    const original = await request(BASE_URL)
+      .post('/api/messages')
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ receiverId: bob.user.id, message: 'the original question' })
+      .expect(201);
+
+    const reply = await request(BASE_URL)
+      .post('/api/messages')
+      .set('Authorization', `Bearer ${bob.token}`)
+      .send({ receiverId: alice.user.id, message: 'my answer', replyTo: original.body.id })
+      .expect(201);
+
+    expect(reply.body.replyTo).toMatchObject({
+      id: original.body.id,
+      text: 'the original question',
+    });
+
+    const history = await request(BASE_URL)
+      .get(`/api/messages/${bob.user.id}`)
+      .set('Authorization', `Bearer ${alice.token}`)
+      .expect(200);
+
+    const stored = history.body.messages.find((item) => item.id === reply.body.id);
+    expect(stored.replyTo).toMatchObject({ text: 'the original question' });
+  });
+
+  test('cannot reply to a message from another conversation', async () => {
+    const alice = await registerUser('cross-a');
+    const bob = await registerUser('cross-b');
+    const carol = await registerUser('cross-c');
+
+    const foreign = await request(BASE_URL)
+      .post('/api/messages')
+      .set('Authorization', `Bearer ${bob.token}`)
+      .send({ receiverId: carol.user.id, message: 'not for alice' })
+      .expect(201);
+
+    const res = await request(BASE_URL)
+      .post('/api/messages')
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ receiverId: bob.user.id, message: 'hi', replyTo: foreign.body.id });
+
+    expect(res.status).toBe(400);
+  });
+
+  test('rejects a reply to a message that does not exist', async () => {
+    const alice = await registerUser('ghost-a');
+    const bob = await registerUser('ghost-b');
+
+    const res = await request(BASE_URL)
+      .post('/api/messages')
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({
+        receiverId: bob.user.id,
+        message: 'hi',
+        replyTo: '0'.repeat(24),
+      });
+
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('editing messages', () => {
+  test('the author can edit and both sides see the update', async () => {
+    const alice = await registerUser('edit-alice');
+    const bob = await registerUser('edit-bob');
+    const aliceSocket = await connectSocket(alice.token);
+    const bobSocket = await connectSocket(bob.token);
+
+    aliceSocket.socket.emit('privateMessage', {
+      receiverId: bob.user.id,
+      message: 'teh orignal',
+    });
+
+    const sent = await waitFor(
+      () => bobSocket.received.messages.find((m) => m.message === 'teh orignal'),
+      5000,
+      'the original message',
+    );
+
+    aliceSocket.socket.emit('editMessage', {
+      messageId: String(sent.id),
+      text: 'the original',
+    });
+
+    const forAuthor = await waitFor(
+      () => aliceSocket.received.edits.find((m) => String(m.id) === String(sent.id)),
+      5000,
+      'the edit event for the author',
+    );
+    const forPeer = await waitFor(
+      () => bobSocket.received.edits.find((m) => String(m.id) === String(sent.id)),
+      5000,
+      'the edit event for the peer',
+    );
+
+    expect(forAuthor.message).toBe('the original');
+    expect(forAuthor.editedAt).toEqual(expect.any(String));
+    expect(forPeer.message).toBe('the original');
+
+    const history = await request(BASE_URL)
+      .get(`/api/messages/${bob.user.id}`)
+      .set('Authorization', `Bearer ${alice.token}`)
+      .expect(200);
+    const stored = history.body.messages.find((item) => item.id === sent.id);
+    expect(stored.message).toBe('the original');
+    expect(stored.editedAt).toEqual(expect.any(String));
+
+    aliceSocket.socket.close();
+    bobSocket.socket.close();
+  });
+
+  test('only the author can edit', async () => {
+    const alice = await registerUser('own-a');
+    const bob = await registerUser('own-b');
+    const aliceSocket = await connectSocket(alice.token);
+    const bobSocket = await connectSocket(bob.token);
+
+    aliceSocket.socket.emit('privateMessage', {
+      receiverId: bob.user.id,
+      message: 'alice wrote this',
+    });
+
+    const sent = await waitFor(
+      () => bobSocket.received.messages.find((m) => m.message === 'alice wrote this'),
+      5000,
+      'the message',
+    );
+
+    bobSocket.socket.emit('editMessage', {
+      messageId: String(sent.id),
+      text: 'bob was here',
+    });
+
+    const error = await waitFor(
+      () => bobSocket.received.errors.find((e) => /own messages/.test(e.message)),
+      5000,
+      'the ownership error',
+    );
+    expect(error.message).toMatch(/own messages/);
+    expect(aliceSocket.received.edits).toHaveLength(0);
+
+    aliceSocket.socket.close();
+    bobSocket.socket.close();
+  });
+
+  test('rejects an empty edit', async () => {
+    const alice = await registerUser('empty-a');
+    const bob = await registerUser('empty-b');
+    const aliceSocket = await connectSocket(alice.token);
+    const bobSocket = await connectSocket(bob.token);
+
+    aliceSocket.socket.emit('privateMessage', {
+      receiverId: bob.user.id,
+      message: 'something',
+    });
+
+    const sent = await waitFor(
+      () => bobSocket.received.messages.find((m) => m.message === 'something'),
+      5000,
+      'the message',
+    );
+
+    aliceSocket.socket.emit('editMessage', { messageId: String(sent.id), text: '   ' });
+
+    const error = await waitFor(
+      () => aliceSocket.received.errors.find((e) => /empty/.test(e.message)),
+      5000,
+      'the empty-text error',
+    );
+    expect(error.message).toMatch(/empty/);
+
+    aliceSocket.socket.close();
+    bobSocket.socket.close();
+  });
+});
+
+describe('conversation search', () => {
+  test(
+    'finds a message the client never loaded',
+    async () => {
+      const alice = await registerUser('deep-a');
+      const bob = await registerUser('deep-b');
+
+      // Sent first, so it is the oldest message and falls outside the newest 50.
+      const marker = await request(BASE_URL)
+        .post('/api/messages')
+        .set('Authorization', `Bearer ${alice.token}`)
+        .send({ receiverId: bob.user.id, message: 'the zebra manifest is ready' })
+        .expect(201);
+
+      for (let i = 1; i <= 55; i += 1) {
+        await request(BASE_URL)
+          .post('/api/messages')
+          .set('Authorization', `Bearer ${alice.token}`)
+          .send({ receiverId: bob.user.id, message: `filler message ${i}` })
+          .expect(201);
+      }
+
+      const page = await request(BASE_URL)
+        .get(`/api/messages/${bob.user.id}`)
+        .set('Authorization', `Bearer ${alice.token}`)
+        .expect(200);
+      expect(page.body.messages.some((m) => m.message.includes('zebra'))).toBe(false);
+
+      const res = await request(BASE_URL)
+        .get(`/api/messages/${bob.user.id}/search?q=${encodeURIComponent('zebra manifest')}`)
+        .set('Authorization', `Bearer ${alice.token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.results).toHaveLength(1);
+      expect(res.body.results[0].message).toBe('the zebra manifest is ready');
+      expect(res.body.results[0].id).toBe(marker.body.id);
+    },
+    30000,
+  );
+
+  test('is case-insensitive, scoped to the conversation and needs 2 characters', async () => {
+    const alice = await registerUser('scope-a');
+    const bob = await registerUser('scope-b');
+    const carol = await registerUser('scope-c');
+
+    await request(BASE_URL)
+      .post('/api/messages')
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ receiverId: bob.user.id, message: 'Meeting Notes for monday' })
+      .expect(201);
+    await request(BASE_URL)
+      .post('/api/messages')
+      .set('Authorization', `Bearer ${alice.token}`)
+      .send({ receiverId: carol.user.id, message: 'meeting notes for carol' })
+      .expect(201);
+
+    const tooShort = await request(BASE_URL)
+      .get(`/api/messages/${bob.user.id}/search?q=m`)
+      .set('Authorization', `Bearer ${alice.token}`);
+    expect(tooShort.status).toBe(400);
+
+    const res = await request(BASE_URL)
+      .get(`/api/messages/${bob.user.id}/search?q=${encodeURIComponent('MEETING')}`)
+      .set('Authorization', `Bearer ${alice.token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.results).toHaveLength(1);
+    expect(res.body.results[0].message).toBe('Meeting Notes for monday');
+  });
+
+  test('does not leak other conversations', async () => {
+    const alice = await registerUser('leak-a');
+    const bob = await registerUser('leak-b');
+    const mallory = await registerUser('leak-mallory');
+
+    await request(BASE_URL)
+      .post('/api/messages')
+      .set('Authorization', `Bearer ${mallory.token}`)
+      .send({ receiverId: bob.user.id, message: 'top secret plans' })
+      .expect(201);
+
+    const res = await request(BASE_URL)
+      .get(`/api/messages/${bob.user.id}/search?q=${encodeURIComponent('secret')}`)
+      .set('Authorization', `Bearer ${alice.token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.results).toEqual([]);
   });
 });

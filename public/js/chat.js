@@ -27,6 +27,14 @@ const remoteVideo = document.getElementById('remoteVideo');
 const acceptCall = document.getElementById('acceptCall');
 const rejectCall = document.getElementById('rejectCall');
 const hangupCall = document.getElementById('hangupCall');
+const attachButton = document.getElementById('attachButton');
+const fileInput = document.getElementById('fileInput');
+const attachmentChip = document.getElementById('attachmentChip');
+const attachmentName = document.getElementById('attachmentName');
+const removeAttachment = document.getElementById('removeAttachment');
+const contextChip = document.getElementById('contextChip');
+const contextLabel = document.getElementById('contextLabel');
+const removeContext = document.getElementById('removeContext');
 
 const PAGE_SIZE = 50;
 
@@ -38,8 +46,14 @@ const pageCursors = new Map();
 const loadingOlder = new Set();
 const onlineUsers = new Set();
 const knownUsers = new Map();
+const missedCalls = new Map();
 let activeUserSearch = '';
 let messageQuery = '';
+let searchResults = null;
+let messageSearchSeq = 0;
+let pendingAttachment = null;
+let replyTarget = null;
+let editingTarget = null;
 let typingFromUser = null;
 let typingDisplayTimer = null;
 let typingEmitTimer = null;
@@ -122,6 +136,158 @@ const formatTime = (dateValue) => {
   return date.toLocaleString();
 };
 
+const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024;
+const ALLOWED_ATTACHMENT_TYPES = [
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'application/pdf',
+];
+
+const attachmentUrls = new Map();
+
+const formatSize = (bytes) => {
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  if (bytes >= 1024) {
+    return `${Math.round(bytes / 1024)} KB`;
+  }
+
+  return `${bytes} B`;
+};
+
+const clearAttachment = () => {
+  pendingAttachment = null;
+  fileInput.value = '';
+  attachmentChip.hidden = true;
+  attachmentName.textContent = '';
+};
+
+const clearContext = () => {
+  replyTarget = null;
+  editingTarget = null;
+  contextChip.hidden = true;
+  contextLabel.textContent = '';
+};
+
+const previewText = (item) => {
+  const text = (item.message || (item.attachment && item.attachment.name) || '').trim();
+  return text.length > 40 ? `${text.slice(0, 40)}\u2026` : text;
+};
+
+const setReplyTarget = (item) => {
+  editingTarget = null;
+  replyTarget = item;
+  const author = item.isOwnMessage ? 'you' : selectedUser ? selectedUser.name : 'them';
+  contextLabel.textContent = `Replying to ${author}: ${previewText(item)}`;
+  contextChip.hidden = false;
+  messageInput.focus();
+};
+
+const setEditingTarget = (item) => {
+  if (!item.message) {
+    return;
+  }
+
+  replyTarget = null;
+  editingTarget = item;
+  contextLabel.textContent = `Editing: ${previewText(item)}`;
+  contextChip.hidden = false;
+  messageInput.value = item.message;
+  messageInput.focus();
+};
+
+const setAttachment = (file) => {
+  if (!ALLOWED_ATTACHMENT_TYPES.includes(file.type)) {
+    chatError.textContent = 'This file type is not allowed.';
+    return;
+  }
+
+  if (file.size > MAX_ATTACHMENT_BYTES) {
+    chatError.textContent = 'Attachment is too large (max 4 MB).';
+    return;
+  }
+
+  const reader = new FileReader();
+
+  reader.onload = () => {
+    pendingAttachment = { name: file.name, type: file.type, data: reader.result };
+    attachmentName.textContent = `${file.name} \u00b7 ${formatSize(file.size)}`;
+    attachmentChip.hidden = false;
+    chatError.textContent = '';
+  };
+
+  reader.onerror = () => {
+    chatError.textContent = 'Could not read that file.';
+  };
+
+  reader.readAsDataURL(file);
+};
+
+// Attachment bytes are fetched on demand (the route requires a token) and the
+// resulting blob URL is cached so re-renders do not re-download.
+const resolveAttachment = async (item) => {
+  const key = String(item.id);
+
+  if (attachmentUrls.has(key)) {
+    return attachmentUrls.get(key);
+  }
+
+  try {
+    const response = await fetch(item.attachment.url, { headers: authHeaders });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    attachmentUrls.set(key, objectUrl);
+    return objectUrl;
+  } catch (error) {
+    return null;
+  }
+};
+
+const renderAttachment = (item, container) => {
+  if (!item.attachment) {
+    return;
+  }
+
+  const meta = item.attachment;
+
+  if (meta.contentType && meta.contentType.startsWith('image/')) {
+    const image = document.createElement('img');
+    image.className = 'message-image';
+    image.alt = meta.name;
+    container.appendChild(image);
+
+    resolveAttachment(item).then((objectUrl) => {
+      if (objectUrl) {
+        image.src = objectUrl;
+      }
+    });
+
+    return;
+  }
+
+  const link = document.createElement('a');
+  link.className = 'message-file';
+  link.target = '_blank';
+  link.rel = 'noopener';
+  link.textContent = `${meta.name} (${formatSize(meta.size || 0)})`;
+  container.appendChild(link);
+
+  resolveAttachment(item).then((objectUrl) => {
+    if (objectUrl) {
+      link.href = objectUrl;
+    }
+  });
+};
+
 const renderMessages = (messages) => {
   messagesContainer.innerHTML = '';
 
@@ -136,8 +302,35 @@ const renderMessages = (messages) => {
     const messageElement = document.createElement('article');
     messageElement.className = `message ${item.isOwnMessage ? 'own' : ''}`;
 
-    const messageText = document.createElement('p');
-    messageText.textContent = item.message;
+    if (item.replyTo) {
+      const quote = document.createElement('div');
+      quote.className = 'reply-quote';
+
+      const quoteAuthor = document.createElement('span');
+      quoteAuthor.className = 'reply-quote-author';
+      quoteAuthor.textContent =
+        String(item.replyTo.sender) === String(currentUser.id)
+          ? 'You'
+          : selectedUser && String(item.replyTo.sender) === String(selectedUser._id)
+            ? selectedUser.name
+            : 'Message';
+
+      const quoteText = document.createElement('p');
+      quoteText.className = 'reply-quote-text';
+      quoteText.textContent = item.replyTo.text;
+
+      quote.appendChild(quoteAuthor);
+      quote.appendChild(quoteText);
+      messageElement.appendChild(quote);
+    }
+
+    if (item.message) {
+      const messageText = document.createElement('p');
+      messageText.textContent = item.message;
+      messageElement.appendChild(messageText);
+    }
+
+    renderAttachment(item, messageElement);
 
     const meta = document.createElement('div');
     meta.className = 'meta';
@@ -155,7 +348,36 @@ const renderMessages = (messages) => {
     timeText.textContent = formatTime(item.timestamp);
 
     meta.appendChild(timeText);
-    messageElement.appendChild(messageText);
+
+    if (item.editedAt) {
+      const editedFlag = document.createElement('span');
+      editedFlag.className = 'edited-flag';
+      editedFlag.textContent = 'edited';
+      meta.appendChild(editedFlag);
+    }
+
+    const actions = document.createElement('span');
+    actions.className = 'message-actions';
+
+    const replyButton = document.createElement('button');
+    replyButton.type = 'button';
+    replyButton.className = 'message-action';
+    replyButton.textContent = 'Reply';
+    replyButton.title = 'Reply to this message';
+    replyButton.addEventListener('click', () => setReplyTarget(item));
+    actions.appendChild(replyButton);
+
+    if (item.isOwnMessage && item.message) {
+      const editButton = document.createElement('button');
+      editButton.type = 'button';
+      editButton.className = 'message-action';
+      editButton.textContent = 'Edit';
+      editButton.title = 'Edit this message';
+      editButton.addEventListener('click', () => setEditingTarget(item));
+      actions.appendChild(editButton);
+    }
+
+    meta.appendChild(actions);
     messageElement.appendChild(meta);
 
     messagesContainer.appendChild(messageElement);
@@ -171,6 +393,12 @@ const getVisibleMessages = () => {
     return all;
   }
 
+  // Server results cover the whole conversation (decrypted on demand);
+  // until they land we show the client-side filter of what is loaded.
+  if (searchResults) {
+    return searchResults;
+  }
+
   const needle = messageQuery.toLowerCase();
   return all.filter((item) => item.message.toLowerCase().includes(needle));
 };
@@ -180,10 +408,16 @@ const renderCurrent = () => {
   renderMessages(visible);
 
   if (messageQuery) {
-    const total = selectedUser
-      ? (conversationCache.get(String(selectedUser._id)) || []).length
-      : 0;
-    searchMeta.textContent = `${visible.length} of ${total} loaded messages match`;
+    if (searchResults) {
+      searchMeta.textContent = searchResults.length
+        ? `${searchResults.length} match${searchResults.length === 1 ? '' : 'es'} in this conversation`
+        : 'No matches in this conversation';
+    } else {
+      const total = selectedUser
+        ? (conversationCache.get(String(selectedUser._id)) || []).length
+        : 0;
+      searchMeta.textContent = `${visible.length} of ${total} loaded messages match`;
+    }
   } else {
     searchMeta.textContent = '';
   }
@@ -253,10 +487,28 @@ const fetchMessagesPage = async (userId, before = null) => {
 
 const loadConversation = async (user) => {
   chatError.textContent = '';
+  clearContext();
+
+  // Search is scoped to the conversation that is open.
+  messageSearchSeq += 1;
+  messageQuery = '';
+  searchResults = null;
+  messageSearch.value = '';
+  searchMeta.textContent = '';
+
   setActiveUser(user);
 
   if (unreadCounts.delete(user._id)) {
     renderUnreadBadges();
+  }
+
+  if (missedCalls.delete(String(user._id))) {
+    renderMissedTags();
+    fetch('/api/calls/seen', {
+      method: 'POST',
+      headers: { ...authHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: user._id }),
+    });
   }
 
   socket.emit('conversationOpened', { userId: user._id });
@@ -334,6 +586,49 @@ const renderUnreadBadges = () => {
   });
 };
 
+const renderMissedTags = () => {
+  userItems.forEach((item, userId) => {
+    const tag = item.querySelector('.missed-tag');
+
+    if (!tag) {
+      return;
+    }
+
+    const count = missedCalls.get(String(userId)) || 0;
+    tag.hidden = count === 0;
+    tag.textContent = count > 1 ? `Missed calls (${count})` : 'Missed call';
+  });
+};
+
+const loadMissedCalls = async () => {
+  try {
+    const response = await fetch('/api/calls/missed', { headers: authHeaders });
+
+    if (response.status === 401) {
+      localStorage.clear();
+      window.location.href = '/login.html';
+      return;
+    }
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return;
+    }
+
+    missedCalls.clear();
+
+    data.forEach((call) => {
+      const key = String(call.from);
+      missedCalls.set(key, (missedCalls.get(key) || 0) + 1);
+    });
+
+    renderMissedTags();
+  } catch (error) {
+    // The tag is a nicety; a failed fetch should not break the page.
+  }
+};
+
 const loadUsers = async (search = '') => {
   try {
     const url = search ? `/api/users?search=${encodeURIComponent(search)}` : '/api/users';
@@ -380,9 +675,14 @@ const loadUsers = async (search = '') => {
       badge.className = 'unread-badge';
       badge.hidden = true;
 
+      const missedTag = document.createElement('span');
+      missedTag.className = 'missed-tag';
+      missedTag.hidden = true;
+
       item.appendChild(name);
       item.appendChild(lineBreak);
       item.appendChild(email);
+      item.appendChild(missedTag);
       item.appendChild(badge);
       item.addEventListener('click', () => loadConversation(user));
       usersList.appendChild(item);
@@ -390,6 +690,7 @@ const loadUsers = async (search = '') => {
     });
 
     renderUnreadBadges();
+    renderMissedTags();
     renderPresence();
     updateChatStatus();
     updateCallButton();
@@ -407,6 +708,21 @@ const loadUsers = async (search = '') => {
     chatError.textContent = 'Unable to fetch users right now.';
   }
 };
+
+socket.on('callMissed', ({ from } = {}) => {
+  if (!from) {
+    return;
+  }
+
+  const key = String(from);
+  missedCalls.set(key, (missedCalls.get(key) || 0) + 1);
+
+  if (!knownUsers.has(key)) {
+    loadUsers(activeUserSearch);
+  }
+
+  renderMissedTags();
+});
 
 socket.on('messageReceived', (newMessage) => {
   const otherUserId =
@@ -474,6 +790,27 @@ socket.on('messageStatus', (update) => {
   }
 });
 
+socket.on('messageEdited', (edited) => {
+  let touched = false;
+
+  conversationCache.forEach((messages, key) => {
+    const index = messages.findIndex((item) => String(item.id) === String(edited.id));
+
+    if (index === -1) {
+      return;
+    }
+
+    const next = [...messages];
+    next[index] = { ...next[index], message: edited.message, editedAt: edited.editedAt };
+    conversationCache.set(key, next);
+    touched = true;
+  });
+
+  if (touched && selectedUser) {
+    renderCurrent();
+  }
+});
+
 messageForm.addEventListener('submit', (event) => {
   event.preventDefault();
   chatError.textContent = '';
@@ -485,19 +822,44 @@ messageForm.addEventListener('submit', (event) => {
 
   const message = messageInput.value.trim();
 
-  if (!message) {
+  if (!message && !pendingAttachment) {
     chatError.textContent = 'Message cannot be empty.';
+    return;
+  }
+
+  if (editingTarget) {
+    if (!message) {
+      chatError.textContent = 'Message cannot be empty.';
+      return;
+    }
+
+    socket.emit('editMessage', { messageId: String(editingTarget.id), text: message });
+    clearContext();
+    stopTypingNotice();
+    messageInput.value = '';
+    messageInput.focus();
     return;
   }
 
   socket.emit('privateMessage', {
     receiverId: selectedUser._id,
     message,
+    attachment: pendingAttachment,
+    replyTo: replyTarget ? String(replyTarget.id) : undefined,
   });
 
+  clearContext();
+  clearAttachment();
   stopTypingNotice();
   messageInput.value = '';
   messageInput.focus();
+});
+
+messageInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && (replyTarget || editingTarget)) {
+    clearContext();
+    messageInput.value = '';
+  }
 });
 
 const stopTypingNotice = () => {
@@ -536,14 +898,40 @@ userSearch.addEventListener('input', () => {
   userSearchTimer = setTimeout(() => loadUsers(activeUserSearch), 250);
 });
 
-// ---------- message search (client side; content is encrypted at rest) ----------
+// ---------- message search ----------
+// The server decrypts on demand, so this covers messages the client never
+// loaded; the client-side filter keeps things instant while the request runs.
 let messageSearchTimer = null;
 
 messageSearch.addEventListener('input', () => {
   clearTimeout(messageSearchTimer);
   messageSearchTimer = setTimeout(() => {
     messageQuery = messageSearch.value.trim();
+    searchResults = null;
     renderCurrent();
+
+    if (messageQuery.length < 2 || !selectedUser) {
+      return;
+    }
+
+    const userId = String(selectedUser._id);
+    const seq = (messageSearchSeq += 1);
+
+    fetch(`/api/messages/${userId}/search?q=${encodeURIComponent(messageQuery)}`, {
+      headers: authHeaders,
+    })
+      .then((response) => (response.ok ? response.json() : Promise.reject(new Error('no match'))))
+      .then((data) => {
+        if (seq !== messageSearchSeq || !selectedUser || String(selectedUser._id) !== userId) {
+          return; // stale: user typed more or switched conversations
+        }
+
+        searchResults = data.results;
+        renderCurrent();
+      })
+      .catch(() => {
+        // Keep the client-side filter of loaded messages.
+      });
   }, 150);
 });
 
@@ -773,7 +1161,8 @@ const startVideoCall = async () => {
 
   ringTimer = setTimeout(() => {
     if (activeCall && activeCall.role === 'caller') {
-      closeCall({ message: 'No answer.' });
+      // Tell the server so the unanswered call is recorded as missed.
+      closeCall({ message: 'No answer.', notifyPeer: true });
     }
   }, 30000);
 
@@ -905,4 +1294,25 @@ hangupCall.addEventListener('click', () => {
   closeCall({ message: 'Call ended.', notifyPeer: true });
 });
 
+attachButton.addEventListener('click', () => {
+  fileInput.click();
+});
+
+fileInput.addEventListener('change', () => {
+  const file = fileInput.files && fileInput.files[0];
+
+  if (file) {
+    setAttachment(file);
+  }
+});
+
+removeAttachment.addEventListener('click', clearAttachment);
+
+removeContext.addEventListener('click', () => {
+  clearContext();
+  messageInput.value = '';
+  messageInput.focus();
+});
+
 loadUsers();
+loadMissedCalls();

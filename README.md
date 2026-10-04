@@ -11,7 +11,11 @@ Beginner-friendly secure real-time one-to-one chat application built with Common
 - People search to start a new chat on purpose (`?search=`)
 - One-to-one real-time messaging via Socket.IO
 - Cursor-based pagination with infinite scroll for long conversations
-- Search inside the conversation you have open
+- Full-conversation message search: the server decrypts on demand, so it finds
+  messages the client never loaded
+- Send images and files (encrypted at rest, downloaded only by participants)
+- Reply to a message (quoted preview) and edit your own (`edited` marker)
+- Missed-call log with a sidebar tag that clears when you open the chat
 - Typing indicators and online/offline presence
 - Peer-to-peer video and audio calls (WebRTC, relayed signalling)
 - Persistent conversation history in MongoDB
@@ -164,18 +168,42 @@ All protected endpoints require an `Authorization` header containing a JWT in th
 
 - `GET /api/messages/:userId`
   - conversation history between logged-in user and `:userId`
+  - query params: `limit` (max 100), `before` (cursor id)
+- `GET /api/messages/:userId/search?q=zebra`
+  - searches the **whole** conversation (2+ characters); the server decrypts
+    each message on demand, scans the newest 1000 and returns up to 50 matches
+- `GET /api/messages/:messageId/attachment`
+  - original file bytes; only the two participants may download
 - `POST /api/messages`
   - body: `{ "receiverId": "<userId>", "message": "Hello" }`
+  - optional: `attachment: { name, type, data }` (base64 or data URL) and
+    `replyTo: "<messageId>"` (must belong to the same conversation)
+
+### Calls
+
+- `GET /api/calls/missed`
+  - up to 20 unread missed calls, newest first
+- `POST /api/calls/seen`
+  - body: `{ "from": "<userId>" }` — clears that caller's missed-call tag
 
 ## Socket.IO Flow
 
 1. Client logs in and stores JWT.
 2. Client connects socket with JWT in `auth.token`.
 3. Server verifies JWT in socket middleware.
-4. Client emits `privateMessage` with `{ receiverId, message }`.
+4. Client emits `privateMessage` with `{ receiverId, message, attachment?, replyTo? }`.
 5. Server validates sender, encrypts message, stores in MongoDB.
 6. Server emits `messageReceived` to sender and receiver.
 7. Client listens to `messageReceived` and updates chat UI.
+
+Other events:
+
+- `editMessage` `{ messageId, text }` → `messageEdited` to both sides (only the
+  author may edit; the text is re-encrypted and flagged `editedAt`).
+- `typing`, `presenceUpdate` / `presenceSnapshot` for presence and indicators.
+- `call:invite|accept|reject|hangup|signal` for WebRTC signalling; an
+  unanswered call produces `callMissed` for the callee.
+- `conversationOpened` to mark a conversation `seen`.
 
 ## Message Status (Sent / Delivered / Seen)
 
@@ -211,6 +239,8 @@ peers and never sees the media.
 2. The callee sees an incoming call with **Accept** / **Decline**.
 3. Offer, answer and ICE candidates are relayed over the existing socket.
 4. **Hang up** stops the tracks on both sides.
+5. The call lifecycle is stored; if it ends while still ringing, the callee
+   gets a **Missed call** tag in the sidebar (cleared when they open the chat).
 
 Requirements and limits:
 

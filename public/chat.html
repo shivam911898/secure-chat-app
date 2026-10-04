@@ -57,9 +57,32 @@
 
         <div id="messages" class="messages"></div>
 
+        <div id="attachmentChip" class="attachment-chip" hidden>
+          <span id="attachmentName"></span>
+          <button id="removeAttachment" class="chip-remove" type="button" title="Remove attachment">
+            ✕
+          </button>
+        </div>
+
+        <div id="contextChip" class="attachment-chip context-chip" hidden>
+          <span id="contextLabel"></span>
+          <button id="removeContext" class="chip-remove" type="button" title="Cancel">
+            ✕
+          </button>
+        </div>
+
         <form id="messageForm" class="message-form">
-          <input id="messageInput" type="text" placeholder="Type message..." autocomplete="off" required />
+          <input id="messageInput" type="text" placeholder="Type message..." autocomplete="off" />
+          <button id="attachButton" class="attach-button" type="button" title="Send an image or file">
+            Attach
+          </button>
           <button type="submit">Send</button>
+          <input
+            id="fileInput"
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp,application/pdf"
+            hidden
+          />
         </form>
         <p id="chatError" class="error"></p>
       </section>

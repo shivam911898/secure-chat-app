@@ -8,6 +8,7 @@ const connectDB = require('./config/db');
 const authRoutes = require('./routes/authRoutes');
 const userRoutes = require('./routes/userRoutes');
 const messageRoutes = require('./routes/messageRoutes');
+const callRoutes = require('./routes/callRoutes');
 const registerChatSocket = require('./sockets/chatSocket');
 const { apiRateLimit } = require('./middleware/rateLimitMiddleware');
 const { validateEncryptionKey } = require('./utils/encryption');
@@ -53,17 +54,20 @@ const io = new Server(server, {
   cors: {
     origin: '*',
   },
+  // Attachments travel base64-encoded; 4 MB raw ≈ 5.5 MB on the wire.
+  maxHttpBufferSize: 8 * 1024 * 1024,
 });
 
 connectDB();
 
-app.use(express.json());
+app.use(express.json({ limit: '6mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(apiRateLimit);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/messages', messageRoutes);
+app.use('/api/calls', callRoutes);
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'login.html'));
@@ -77,7 +81,11 @@ app.use((err, req, res, next) => {
     return next(err);
   }
 
-  return res.status(500).json({ message: 'Internal server error' });
+  // Body-parser failures (bad JSON, payload too large) carry their own status.
+  const status = err.status || err.statusCode || 500;
+  const message = status >= 500 ? 'Internal server error' : err.message || 'Bad request.';
+
+  return res.status(status).json({ message });
 });
 
 registerChatSocket(io);

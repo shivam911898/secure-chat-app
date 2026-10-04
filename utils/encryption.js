@@ -59,8 +59,36 @@ const decryptText = ({ encryptedMessage, iv, authTag }) => {
   return decrypted.toString('utf8');
 };
 
+// Attachments travel as binary, so they are encrypted with the same key and
+// algorithm as the text they accompany.
+const encryptBuffer = (plainBuffer) => {
+  const key = getKeyBuffer();
+  const iv = crypto.randomBytes(IV_LENGTH);
+  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+
+  const encrypted = Buffer.concat([cipher.update(plainBuffer), cipher.final()]);
+
+  return {
+    data: encrypted,
+    iv: iv.toString('hex'),
+    authTag: cipher.getAuthTag().toString('hex'),
+  };
+};
+
+const decryptBuffer = ({ data, iv, authTag }) => {
+  const key = getKeyBuffer();
+  const decipher = crypto.createDecipheriv(ALGORITHM, key, Buffer.from(iv, 'hex'));
+
+  decipher.setAuthTag(Buffer.from(authTag, 'hex'));
+
+  const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
+  return Buffer.concat([decipher.update(buffer), decipher.final()]);
+};
+
 module.exports = {
   encryptText,
   decryptText,
+  encryptBuffer,
+  decryptBuffer,
   validateEncryptionKey,
 };
