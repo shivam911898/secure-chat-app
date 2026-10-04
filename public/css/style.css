@@ -167,6 +167,31 @@ button:hover {
   display: none;
 }
 
+.presence-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: #c3ccd8;
+  vertical-align: middle;
+}
+
+.user-item.online .presence-dot {
+  background: #22c55e;
+}
+
+.chat-status {
+  font-size: 13px;
+  color: var(--muted);
+  text-align: right;
+}
+
+.chat-status.typing {
+  color: var(--primary);
+  font-style: italic;
+}
+
 .user-item.active,
 .user-item:hover {
   background: #edf2ff;

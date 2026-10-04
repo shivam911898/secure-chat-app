@@ -41,6 +41,12 @@ const emitToUser = (io, userId, eventName, payload) => {
   });
 };
 
+const isOnline = (userId) => connectedUsers.has(String(userId));
+
+const broadcastPresence = (io, userId, online) => {
+  io.emit('presenceUpdate', { userId: String(userId), online });
+};
+
 const registerChatSocket = (io) => {
   io.use((socket, next) => {
     try {
@@ -60,6 +66,26 @@ const registerChatSocket = (io) => {
 
   io.on('connection', (socket) => {
     attachSocketToUser(socket.userId, socket.id);
+
+    socket.emit('presenceSnapshot', [...connectedUsers.keys()]);
+    broadcastPresence(io, socket.userId, true);
+
+    socket.on('typing', (payload = {}) => {
+      const { receiverId } = payload;
+
+      if (
+        !receiverId ||
+        !mongoose.isValidObjectId(receiverId) ||
+        String(receiverId) === String(socket.userId)
+      ) {
+        return;
+      }
+
+      emitToUser(io, receiverId, 'typing', {
+        userId: socket.userId,
+        isTyping: payload.isTyping !== false,
+      });
+    });
 
     // Anything that was only "sent" while this user was offline is now delivered.
     markMessagesDelivered({ viewerId: socket.userId })
@@ -154,6 +180,10 @@ const registerChatSocket = (io) => {
 
     socket.on('disconnect', () => {
       detachSocketFromUser(socket.userId, socket.id);
+
+      if (!isOnline(socket.userId)) {
+        broadcastPresence(io, socket.userId, false);
+      }
     });
   });
 };

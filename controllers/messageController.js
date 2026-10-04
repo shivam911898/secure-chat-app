@@ -98,10 +98,24 @@ const formatMessage = (messageDoc, currentUserId) => ({
     encryptedMessage: messageDoc.encryptedMessage,
     iv: messageDoc.iv,
     authTag: messageDoc.authTag,
-  }),    timestamp: messageDoc.createdAt,
-    status: messageDoc.status || 'sent',
-    isOwnMessage: String(messageDoc.sender) === String(currentUserId),
+  }),
+  timestamp: messageDoc.createdAt,
+  status: messageDoc.status || 'sent',
+  isOwnMessage: String(messageDoc.sender) === String(currentUserId),
 });
+
+const DEFAULT_PAGE_SIZE = 50;
+const MAX_PAGE_SIZE = 100;
+
+const parsePageOptions = (query) => {
+  const rawLimit = Number.parseInt(query.limit, 10);
+  const limit = Number.isNaN(rawLimit) ? DEFAULT_PAGE_SIZE : rawLimit;
+
+  return {
+    limit: Math.min(Math.max(limit, 1), MAX_PAGE_SIZE),
+    before: query.before,
+  };
+};
 
 const getConversation = async (req, res) => {
   try {
@@ -119,17 +133,33 @@ const getConversation = async (req, res) => {
       return res.status(404).json({ message: 'User not found.' });
     }
 
-    const messages = await Message.find({
+    const { limit, before } = parsePageOptions(req.query);
+    const filter = {
       $or: [
         { sender: currentUserId, receiver: otherUserId },
         { sender: otherUserId, receiver: currentUserId },
       ],
-    })
-      .sort({ createdAt: 1 })
-      .lean();
+    };
 
-    const decrypted = messages.map((message) => formatMessage(message, req.user.id));
-    return res.status(200).json(decrypted);
+    if (before) {
+      if (!mongoose.isValidObjectId(before)) {
+        return res.status(400).json({ message: 'Invalid pagination cursor.' });
+      }
+
+      // Newest-first scan: everything older than the cursor.
+      filter._id = { $lt: new mongoose.Types.ObjectId(before) };
+    }
+
+    const docs = await Message.find(filter).sort({ _id: -1 }).limit(limit + 1).lean();
+    const hasMore = docs.length > limit;
+    const page = (hasMore ? docs.slice(0, limit) : docs).reverse();
+    const decrypted = page.map((message) => formatMessage(message, req.user.id));
+
+    return res.status(200).json({
+      messages: decrypted,
+      nextCursor: hasMore && decrypted.length ? String(decrypted[0].id) : null,
+      hasMore,
+    });
   } catch (error) {
     // eslint-disable-next-line no-console
     console.error('Failed to fetch conversation:', error);

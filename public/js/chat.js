@@ -12,12 +12,21 @@ const messagesContainer = document.getElementById('messages');
 const messageForm = document.getElementById('messageForm');
 const messageInput = document.getElementById('messageInput');
 const chatError = document.getElementById('chatError');
+const chatStatus = document.getElementById('chatStatus');
 const logoutButton = document.getElementById('logoutButton');
+
+const PAGE_SIZE = 50;
 
 let selectedUser = null;
 const conversationCache = new Map();
 const unreadCounts = new Map();
 const userItems = new Map();
+const pageCursors = new Map();
+const loadingOlder = new Set();
+const onlineUsers = new Set();
+let typingFromUser = null;
+let typingDisplayTimer = null;
+let typingEmitTimer = null;
 
 const STATUS_LABELS = {
   sent: '\u2713 Sent',
@@ -46,6 +55,48 @@ socket.on('connect', () => {
 
 socket.on('chatError', (payload) => {
   chatError.textContent = payload.message || 'Chat error occurred.';
+});
+
+socket.on('presenceSnapshot', (userIds = []) => {
+  onlineUsers.clear();
+  userIds.forEach((id) => onlineUsers.add(String(id)));
+  renderPresence();
+  updateChatStatus();
+});
+
+socket.on('presenceUpdate', ({ userId, online } = {}) => {
+  if (!userId) {
+    return;
+  }
+
+  if (online) {
+    onlineUsers.add(String(userId));
+  } else {
+    onlineUsers.delete(String(userId));
+  }
+
+  renderPresence();
+  updateChatStatus();
+});
+
+socket.on('typing', ({ userId, isTyping } = {}) => {
+  if (!userId || !selectedUser || String(userId) !== String(selectedUser._id)) {
+    return;
+  }
+
+  clearTimeout(typingDisplayTimer);
+
+  if (isTyping) {
+    typingFromUser = String(userId);
+    typingDisplayTimer = setTimeout(() => {
+      typingFromUser = null;
+      updateChatStatus();
+    }, 3000);
+  } else {
+    typingFromUser = null;
+  }
+
+  updateChatStatus();
 });
 
 const formatTime = (dateValue) => {
@@ -100,6 +151,58 @@ const setActiveUser = (user) => {
   Array.from(usersList.querySelectorAll('.user-item')).forEach((item) => {
     item.classList.toggle('active', item.dataset.userId === user._id);
   });
+
+  typingFromUser = null;
+  updateChatStatus();
+};
+
+const renderPresence = () => {
+  userItems.forEach((item, userId) => {
+    item.classList.toggle('online', onlineUsers.has(String(userId)));
+  });
+};
+
+const updateChatStatus = () => {
+  if (!selectedUser) {
+    chatStatus.textContent = '';
+    chatStatus.classList.remove('typing');
+    return;
+  }
+
+  if (typingFromUser && typingFromUser === String(selectedUser._id)) {
+    chatStatus.textContent = `${selectedUser.name} is typing\u2026`;
+    chatStatus.classList.add('typing');
+    return;
+  }
+
+  chatStatus.classList.remove('typing');
+  chatStatus.textContent = onlineUsers.has(String(selectedUser._id)) ? 'Online' : 'Offline';
+};
+
+const fetchMessagesPage = async (userId, before = null) => {
+  const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
+
+  if (before) {
+    params.set('before', before);
+  }
+
+  const response = await fetch(`/api/messages/${userId}?${params.toString()}`, {
+    headers: authHeaders,
+  });
+
+  if (response.status === 401) {
+    localStorage.clear();
+    window.location.href = '/login.html';
+    return null;
+  }
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.message || 'Unable to load conversation.');
+  }
+
+  return data;
 };
 
 const loadConversation = async (user) => {
@@ -113,29 +216,63 @@ const loadConversation = async (user) => {
   socket.emit('conversationOpened', { userId: user._id });
 
   try {
-    const response = await fetch(`/api/messages/${user._id}`, {
-      headers: authHeaders,
-    });
+    const data = await fetchMessagesPage(user._id);
 
-    if (response.status === 401) {
-      localStorage.clear();
-      window.location.href = '/login.html';
+    if (!data) {
       return;
     }
 
-    const data = await response.json();
-
-    if (!response.ok) {
-      chatError.textContent = data.message || 'Unable to load conversation.';
-      return;
-    }
-
-    conversationCache.set(user._id, data);
-    renderMessages(data);
+    conversationCache.set(user._id, data.messages);
+    pageCursors.set(user._id, data.nextCursor);
+    renderMessages(data.messages);
   } catch (error) {
     chatError.textContent = 'Unable to load conversation right now.';
   }
 };
+
+const loadOlderMessages = async () => {
+  if (!selectedUser) {
+    return;
+  }
+
+  const userId = String(selectedUser._id);
+  const cursor = pageCursors.get(userId);
+
+  if (!cursor || loadingOlder.has(userId)) {
+    return;
+  }
+
+  loadingOlder.add(userId);
+
+  try {
+    const data = await fetchMessagesPage(userId, cursor);
+
+    if (!data || !data.messages.length || !selectedUser) {
+      return;
+    }
+
+    const previousHeight = messagesContainer.scrollHeight;
+    const merged = [...data.messages, ...(conversationCache.get(userId) || [])];
+
+    conversationCache.set(userId, merged);
+    pageCursors.set(userId, data.nextCursor);
+
+    if (String(selectedUser._id) === userId) {
+      renderMessages(merged);
+      messagesContainer.scrollTop = messagesContainer.scrollHeight - previousHeight;
+    }
+  } catch (error) {
+    chatError.textContent = 'Unable to load older messages.';
+  } finally {
+    loadingOlder.delete(userId);
+  }
+};
+
+messagesContainer.addEventListener('scroll', () => {
+  if (messagesContainer.scrollTop <= 4) {
+    loadOlderMessages();
+  }
+});
 
 const renderUnreadBadges = () => {
   userItems.forEach((item, userId) => {
@@ -180,6 +317,11 @@ const loadUsers = async () => {
       const name = document.createElement('strong');
       name.textContent = user.name;
 
+      const presenceDot = document.createElement('span');
+      presenceDot.className = 'presence-dot';
+      presenceDot.title = 'Offline';
+      name.appendChild(presenceDot);
+
       const lineBreak = document.createElement('br');
 
       const email = document.createElement('small');
@@ -199,6 +341,8 @@ const loadUsers = async () => {
     });
 
     renderUnreadBadges();
+    renderPresence();
+    updateChatStatus();
   } catch (error) {
     chatError.textContent = 'Unable to fetch users right now.';
   }
@@ -286,8 +430,30 @@ messageForm.addEventListener('submit', (event) => {
     message,
   });
 
+  stopTypingNotice();
   messageInput.value = '';
   messageInput.focus();
+});
+
+const stopTypingNotice = () => {
+  clearTimeout(typingEmitTimer);
+
+  if (selectedUser) {
+    socket.emit('typing', { receiverId: selectedUser._id, isTyping: false });
+  }
+};
+
+messageInput.addEventListener('input', () => {
+  if (!selectedUser) {
+    return;
+  }
+
+  socket.emit('typing', { receiverId: selectedUser._id, isTyping: true });
+  clearTimeout(typingEmitTimer);
+
+  typingEmitTimer = setTimeout(() => {
+    socket.emit('typing', { receiverId: selectedUser._id, isTyping: false });
+  }, 2000);
 });
 
 logoutButton.addEventListener('click', () => {

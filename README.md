@@ -9,10 +9,13 @@ Beginner-friendly secure real-time one-to-one chat application built with Common
 - Protected REST APIs
 - User list excluding logged-in user
 - One-to-one real-time messaging via Socket.IO
+- Cursor-based pagination with infinite scroll for long conversations
+- Typing indicators and online/offline presence
 - Persistent conversation history in MongoDB
 - Message encryption at rest using AES-256-GCM (server-side)
 - Unread-message badge for chats that are not open
 - Delivery ticks on your own messages: Sent, Delivered, Seen
+- Jest integration tests, ESLint and a GitHub Actions workflow
 - Clean modular folder structure for learning
 
 ## Tech Stack
@@ -56,8 +59,14 @@ secure-chat-app/
 │   └── chatSocket.js
 ├── utils/
 │   └── encryption.js
+├── tests/
+│   └── app.test.js
+├── .github/
+│   └── workflows/
+│       └── ci.yml
 ├── .env.example
 ├── .gitignore
+├── eslint.config.js
 ├── package.json
 ├── package-lock.json
 ├── README.md
@@ -112,6 +121,16 @@ Optional development mode:
 ```bash
 npm run dev
 ```
+
+Lint and tests (GitHub Actions runs both on every push and pull request):
+
+```bash
+npm run lint
+npm test
+```
+
+`npm test` boots a throwaway server on port `5399` against the `secure-chat-app-test`
+database, so it never touches your real data.
 
 Open:
 
