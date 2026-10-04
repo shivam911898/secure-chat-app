@@ -91,6 +91,10 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 > This app encrypts messages on the server before saving to MongoDB. This is not full end-to-end encryption.
 
+The server validates `ENCRYPTION_KEY` and `JWT_SECRET` at startup and exits with an actionable
+message if either is missing or still the `.env.example` placeholder, so a bad key fails loudly
+at boot instead of surfacing later as `Unable to deliver message.`
+
 ## Install and Run
 
 ```bash

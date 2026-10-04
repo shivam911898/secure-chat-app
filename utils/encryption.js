@@ -3,14 +3,31 @@ const crypto = require('crypto');
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 12;
 
-const getKeyBuffer = () => {
+const KEY_PATTERN = /^[0-9a-fA-F]{64}$/;
+
+// Returns a human-readable problem with ENCRYPTION_KEY, or null when it is usable.
+const validateEncryptionKey = () => {
   const keyHex = process.env.ENCRYPTION_KEY;
 
-  if (!keyHex || !/^[0-9a-fA-F]{64}$/.test(keyHex)) {
-    throw new Error('ENCRYPTION_KEY must be a 64-character hex string (32-byte key)');
+  if (!keyHex) {
+    return 'ENCRYPTION_KEY is missing from the environment.';
   }
 
-  return Buffer.from(keyHex, 'hex');
+  if (!KEY_PATTERN.test(keyHex)) {
+    return 'ENCRYPTION_KEY must be exactly 64 hexadecimal characters (a 32-byte key).';
+  }
+
+  return null;
+};
+
+const getKeyBuffer = () => {
+  const keyError = validateEncryptionKey();
+
+  if (keyError) {
+    throw new Error(keyError);
+  }
+
+  return Buffer.from(process.env.ENCRYPTION_KEY, 'hex');
 };
 
 const encryptText = (plainText) => {
@@ -45,4 +62,5 @@ const decryptText = ({ encryptedMessage, iv, authTag }) => {
 module.exports = {
   encryptText,
   decryptText,
+  validateEncryptionKey,
 };

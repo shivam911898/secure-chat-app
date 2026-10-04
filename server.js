@@ -10,8 +10,42 @@ const userRoutes = require('./routes/userRoutes');
 const messageRoutes = require('./routes/messageRoutes');
 const registerChatSocket = require('./sockets/chatSocket');
 const { apiRateLimit } = require('./middleware/rateLimitMiddleware');
+const { validateEncryptionKey } = require('./utils/encryption');
 
 dotenv.config();
+
+// Fail fast on unusable secrets: otherwise every message send would throw
+// mid-request and surface as a generic "Unable to deliver message." error.
+const assertSecureConfig = () => {
+  const keyError = validateEncryptionKey();
+
+  if (keyError) {
+    // eslint-disable-next-line no-console
+    console.error(`Configuration error: ${keyError}`);
+    // eslint-disable-next-line no-console
+    console.error(
+      `Generate one with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`,
+    );
+    process.exit(1);
+  }
+
+  if (
+    !process.env.JWT_SECRET ||
+    process.env.JWT_SECRET === 'replace_with_a_strong_random_jwt_secret'
+  ) {
+    // eslint-disable-next-line no-console
+    console.error(
+      'Configuration error: JWT_SECRET is missing or still the .env.example placeholder.',
+    );
+    // eslint-disable-next-line no-console
+    console.error(
+      `Generate one with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`,
+    );
+    process.exit(1);
+  }
+};
+
+assertSecureConfig();
 
 const app = express();
 const server = http.createServer(app);

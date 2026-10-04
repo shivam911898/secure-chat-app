@@ -76,13 +76,22 @@ const registerChatSocket = (io) => {
           message,
         });
 
-        const messagePayload = formatMessage(storedMessage.toObject(), socket.userId);
+        const messageDoc = storedMessage.toObject();
 
-        emitToUser(io, receiverId, 'messageReceived', messagePayload);
-        emitToUser(io, socket.userId, 'messageReceived', messagePayload);
+        // Each recipient needs its own copy so isOwnMessage is correct for both sides.
+        emitToUser(io, receiverId, 'messageReceived', formatMessage(messageDoc, receiverId));
+        emitToUser(io, socket.userId, 'messageReceived', formatMessage(messageDoc, socket.userId));
       } catch (error) {
-        const messageText = error.status ? error.message : 'Unable to deliver message.';
-        socket.emit('chatError', { message: messageText });
+        if (error.status) {
+          socket.emit('chatError', { message: error.message });
+          return;
+        }
+
+        // Unexpected failure (bad config, DB error, ...): log the real cause here,
+        // keep the client-facing text generic so internals are not exposed.
+        // eslint-disable-next-line no-console
+        console.error('Failed to deliver message:', error);
+        socket.emit('chatError', { message: 'Unable to deliver message.' });
       }
     });
 

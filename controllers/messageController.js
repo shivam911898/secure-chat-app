@@ -8,7 +8,7 @@ const validateMessagePayload = (senderId, receiverId, message) => {
     return 'Valid receiverId is required.';
   }
 
-  if (!message || !message.trim()) {
+  if (typeof message !== 'string' || !message.trim()) {
     return 'Message cannot be empty.';
   }
 
@@ -91,6 +91,8 @@ const getConversation = async (req, res) => {
     const decrypted = messages.map((message) => formatMessage(message, req.user.id));
     return res.status(200).json(decrypted);
   } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error('Failed to fetch conversation:', error);
     return res.status(500).json({ message: 'Unable to fetch messages.' });
   }
 };
@@ -110,6 +112,12 @@ const sendMessage = async (req, res) => {
     return res.status(201).json(responseMessage);
   } catch (error) {
     const status = error.status || 500;
+
+    if (status === 500) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to send message:', error);
+    }
+
     const message = status === 500 ? 'Unable to send message.' : error.message;
     return res.status(status).json({ message });
   }
