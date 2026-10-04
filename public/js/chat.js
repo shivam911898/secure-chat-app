@@ -14,6 +14,19 @@ const messageInput = document.getElementById('messageInput');
 const chatError = document.getElementById('chatError');
 const chatStatus = document.getElementById('chatStatus');
 const logoutButton = document.getElementById('logoutButton');
+const userSearch = document.getElementById('userSearch');
+const userListHint = document.getElementById('userListHint');
+const messageSearch = document.getElementById('messageSearch');
+const searchMeta = document.getElementById('searchMeta');
+const callButton = document.getElementById('callButton');
+const callOverlay = document.getElementById('callOverlay');
+const callLabel = document.getElementById('callLabel');
+const callError = document.getElementById('callError');
+const localVideo = document.getElementById('localVideo');
+const remoteVideo = document.getElementById('remoteVideo');
+const acceptCall = document.getElementById('acceptCall');
+const rejectCall = document.getElementById('rejectCall');
+const hangupCall = document.getElementById('hangupCall');
 
 const PAGE_SIZE = 50;
 
@@ -24,6 +37,9 @@ const userItems = new Map();
 const pageCursors = new Map();
 const loadingOlder = new Set();
 const onlineUsers = new Set();
+const knownUsers = new Map();
+let activeUserSearch = '';
+let messageQuery = '';
 let typingFromUser = null;
 let typingDisplayTimer = null;
 let typingEmitTimer = null;
@@ -62,6 +78,7 @@ socket.on('presenceSnapshot', (userIds = []) => {
   userIds.forEach((id) => onlineUsers.add(String(id)));
   renderPresence();
   updateChatStatus();
+  updateCallButton();
 });
 
 socket.on('presenceUpdate', ({ userId, online } = {}) => {
@@ -77,6 +94,7 @@ socket.on('presenceUpdate', ({ userId, online } = {}) => {
 
   renderPresence();
   updateChatStatus();
+  updateCallButton();
 });
 
 socket.on('typing', ({ userId, isTyping } = {}) => {
@@ -108,7 +126,9 @@ const renderMessages = (messages) => {
   messagesContainer.innerHTML = '';
 
   if (!messages.length) {
-    messagesContainer.innerHTML = '<p class="subtitle">No messages yet.</p>';
+    messagesContainer.innerHTML = messageQuery
+      ? '<p class="subtitle">No messages match your search.</p>'
+      : '<p class="subtitle">No messages yet.</p>';
     return;
   }
 
@@ -144,6 +164,31 @@ const renderMessages = (messages) => {
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
 };
 
+const getVisibleMessages = () => {
+  const all = selectedUser ? conversationCache.get(String(selectedUser._id)) || [] : [];
+
+  if (!messageQuery) {
+    return all;
+  }
+
+  const needle = messageQuery.toLowerCase();
+  return all.filter((item) => item.message.toLowerCase().includes(needle));
+};
+
+const renderCurrent = () => {
+  const visible = getVisibleMessages();
+  renderMessages(visible);
+
+  if (messageQuery) {
+    const total = selectedUser
+      ? (conversationCache.get(String(selectedUser._id)) || []).length
+      : 0;
+    searchMeta.textContent = `${visible.length} of ${total} loaded messages match`;
+  } else {
+    searchMeta.textContent = '';
+  }
+};
+
 const setActiveUser = (user) => {
   selectedUser = user;
   selectedUserName.textContent = `Chat with ${user.name}`;
@@ -154,6 +199,7 @@ const setActiveUser = (user) => {
 
   typingFromUser = null;
   updateChatStatus();
+  updateCallButton();
 };
 
 const renderPresence = () => {
@@ -224,14 +270,14 @@ const loadConversation = async (user) => {
 
     conversationCache.set(user._id, data.messages);
     pageCursors.set(user._id, data.nextCursor);
-    renderMessages(data.messages);
+    renderCurrent();
   } catch (error) {
     chatError.textContent = 'Unable to load conversation right now.';
   }
 };
 
 const loadOlderMessages = async () => {
-  if (!selectedUser) {
+  if (!selectedUser || messageQuery) {
     return;
   }
 
@@ -258,7 +304,7 @@ const loadOlderMessages = async () => {
     pageCursors.set(userId, data.nextCursor);
 
     if (String(selectedUser._id) === userId) {
-      renderMessages(merged);
+      renderCurrent();
       messagesContainer.scrollTop = messagesContainer.scrollHeight - previousHeight;
     }
   } catch (error) {
@@ -288,9 +334,10 @@ const renderUnreadBadges = () => {
   });
 };
 
-const loadUsers = async () => {
+const loadUsers = async (search = '') => {
   try {
-    const response = await fetch('/api/users', {
+    const url = search ? `/api/users?search=${encodeURIComponent(search)}` : '/api/users';
+    const response = await fetch(url, {
       headers: authHeaders,
     });
 
@@ -308,8 +355,10 @@ const loadUsers = async () => {
     }
 
     usersList.innerHTML = '';
+    userItems.clear();
 
     users.forEach((user) => {
+      knownUsers.set(String(user._id), user);
       const item = document.createElement('li');
       item.className = 'user-item';
       item.dataset.userId = user._id;
@@ -343,6 +392,17 @@ const loadUsers = async () => {
     renderUnreadBadges();
     renderPresence();
     updateChatStatus();
+    updateCallButton();
+    userListHint.hidden = users.length > 0;
+
+    // Re-highlight the conversation that is currently open.
+    if (selectedUser) {
+      const activeItem = userItems.get(String(selectedUser._id));
+
+      if (activeItem) {
+        activeItem.classList.add('active');
+      }
+    }
   } catch (error) {
     chatError.textContent = 'Unable to fetch users right now.';
   }
@@ -361,7 +421,7 @@ socket.on('messageReceived', (newMessage) => {
   const isOpen = selectedUser && String(selectedUser._id) === String(otherUserId);
 
   if (isOpen) {
-    renderMessages(updatedConversation);
+    renderCurrent();
 
     if (!newMessage.isOwnMessage) {
       // Visible on screen right now, so it counts as seen.
@@ -369,6 +429,11 @@ socket.on('messageReceived', (newMessage) => {
     }
 
     return;
+  }
+
+  if (!knownUsers.has(otherUserId)) {
+    // A message from someone outside my contact list: show them now.
+    loadUsers(activeUserSearch);
   }
 
   if (!newMessage.isOwnMessage) {
@@ -405,7 +470,7 @@ socket.on('messageStatus', (update) => {
   });
 
   if (touched && selectedUser) {
-    renderMessages(conversationCache.get(String(selectedUser._id)) || []);
+    renderCurrent();
   }
 });
 
@@ -460,6 +525,384 @@ logoutButton.addEventListener('click', () => {
   localStorage.removeItem('token');
   localStorage.removeItem('currentUser');
   window.location.href = '/login.html';
+});
+
+// ---------- sidebar people search ----------
+let userSearchTimer = null;
+
+userSearch.addEventListener('input', () => {
+  activeUserSearch = userSearch.value.trim();
+  clearTimeout(userSearchTimer);
+  userSearchTimer = setTimeout(() => loadUsers(activeUserSearch), 250);
+});
+
+// ---------- message search (client side; content is encrypted at rest) ----------
+let messageSearchTimer = null;
+
+messageSearch.addEventListener('input', () => {
+  clearTimeout(messageSearchTimer);
+  messageSearchTimer = setTimeout(() => {
+    messageQuery = messageSearch.value.trim();
+    renderCurrent();
+  }, 150);
+});
+
+// ---------- video calling (WebRTC over the existing socket) ----------
+const RTC_CONFIG = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+let activeCall = null;
+let ringTimer = null;
+
+const userNameFor = (userId) => {
+  const known = knownUsers.get(String(userId));
+
+  if (known) {
+    return known.name;
+  }
+
+  if (selectedUser && String(selectedUser._id) === String(userId)) {
+    return selectedUser.name;
+  }
+
+  return 'the other person';
+};
+
+const updateCallButton = () => {
+  const canCall = Boolean(selectedUser) && onlineUsers.has(String(selectedUser._id)) && !activeCall;
+  callButton.disabled = !canCall;
+  callButton.textContent = activeCall ? 'In call' : 'Video call';
+};
+
+const resetCallUi = () => {
+  callOverlay.hidden = true;
+  acceptCall.hidden = true;
+  rejectCall.hidden = true;
+  hangupCall.hidden = true;
+  callLabel.textContent = 'Starting call\u2026';
+  callError.textContent = '';
+  localVideo.srcObject = null;
+  remoteVideo.srcObject = null;
+};
+
+const closeCall = ({ message = '', notifyPeer = false } = {}) => {
+  if (!activeCall) {
+    return;
+  }
+
+  const { id, peerId, pc, stream } = activeCall;
+  activeCall = null;
+  clearTimeout(ringTimer);
+
+  if (notifyPeer) {
+    socket.emit('call:hangup', { to: peerId, callId: id });
+  }
+
+  if (pc) {
+    try {
+      pc.close();
+    } catch (error) {
+      // already closed
+    }
+  }
+
+  if (stream) {
+    stream.getTracks().forEach((track) => track.stop());
+  }
+
+  resetCallUi();
+  updateCallButton();
+
+  if (message) {
+    chatError.textContent = message;
+  }
+};
+
+const flushPendingIce = async () => {
+  if (!activeCall || !activeCall.pc) {
+    return;
+  }
+
+  const queued = activeCall.pendingIce.splice(0);
+
+  for (const candidate of queued) {
+    if (!activeCall || !activeCall.pc) {
+      return;
+    }
+
+    await activeCall.pc.addIceCandidate(candidate);
+  }
+};
+
+const handleSignal = async (data = {}) => {
+  if (!activeCall) {
+    return;
+  }
+
+  if (data.sdp) {
+    // The offer can arrive before the callee accepts, so park it until then.
+    if (!activeCall.pc) {
+      activeCall.pendingSignals.push(data);
+      return;
+    }
+
+    await activeCall.pc.setRemoteDescription(data.sdp);
+    activeCall.remoteDescSet = true;
+    await flushPendingIce();
+
+    if (data.sdp.type === 'offer') {
+      const answer = await activeCall.pc.createAnswer();
+      await activeCall.pc.setLocalDescription(answer);
+      socket.emit('call:signal', {
+        to: activeCall.peerId,
+        callId: activeCall.id,
+        data: { sdp: { type: answer.type, sdp: answer.sdp } },
+      });
+    }
+
+    const queued = activeCall.pendingSignals.splice(0);
+
+    for (const item of queued) {
+      await handleSignal(item);
+    }
+
+    return;
+  }
+
+  if (data.candidate) {
+    if (!activeCall.pc || !activeCall.remoteDescSet) {
+      activeCall.pendingIce.push(data.candidate);
+      return;
+    }
+
+    await activeCall.pc.addIceCandidate(data.candidate);
+  }
+};
+
+const createPeerConnection = () => {
+  const pc = new RTCPeerConnection(RTC_CONFIG);
+
+  activeCall.stream.getTracks().forEach((track) => {
+    pc.addTrack(track, activeCall.stream);
+  });
+
+  pc.onicecandidate = (event) => {
+    if (event.candidate && activeCall) {
+      socket.emit('call:signal', {
+        to: activeCall.peerId,
+        callId: activeCall.id,
+        data: {
+          candidate: {
+            candidate: event.candidate.candidate,
+            sdpMid: event.candidate.sdpMid,
+            sdpMLineIndex: event.candidate.sdpMLineIndex,
+          },
+        },
+      });
+    }
+  };
+
+  pc.ontrack = (event) => {
+    remoteVideo.srcObject = event.streams[0];
+
+    if (activeCall) {
+      callLabel.textContent = `In call with ${userNameFor(activeCall.peerId)}`;
+    }
+  };
+
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'failed') {
+      closeCall({ message: 'Call failed.' });
+    }
+  };
+
+  activeCall.pc = pc;
+  return pc;
+};
+
+const ensureLocalMedia = async () => {
+  if (activeCall.stream) {
+    return;
+  }
+
+  activeCall.stream = await navigator.mediaDevices.getUserMedia({
+    video: true,
+    audio: true,
+  });
+  localVideo.srcObject = activeCall.stream;
+};
+
+const startVideoCall = async () => {
+  if (!selectedUser) {
+    chatError.textContent = 'Select a user first.';
+    return;
+  }
+
+  if (activeCall) {
+    chatError.textContent = 'You are already in a call.';
+    return;
+  }
+
+  if (!onlineUsers.has(String(selectedUser._id))) {
+    chatError.textContent = 'They are offline right now.';
+    return;
+  }
+
+  const peerId = String(selectedUser._id);
+
+  activeCall = {
+    id: `call-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    peerId,
+    role: 'caller',
+    pc: null,
+    stream: null,
+    pendingIce: [],
+    pendingSignals: [],
+    remoteDescSet: false,
+  };
+
+  callOverlay.hidden = false;
+  acceptCall.hidden = true;
+  rejectCall.hidden = true;
+  hangupCall.hidden = false;
+  callLabel.textContent = `Calling ${userNameFor(peerId)}\u2026`;
+  callError.textContent = '';
+  chatError.textContent = '';
+  updateCallButton();
+
+  socket.emit('call:invite', { to: peerId, callId: activeCall.id });
+
+  ringTimer = setTimeout(() => {
+    if (activeCall && activeCall.role === 'caller') {
+      closeCall({ message: 'No answer.' });
+    }
+  }, 30000);
+
+  try {
+    await ensureLocalMedia();
+    createPeerConnection();
+
+    const offer = await activeCall.pc.createOffer();
+    await activeCall.pc.setLocalDescription(offer);
+
+    socket.emit('call:signal', {
+      to: activeCall.peerId,
+      callId: activeCall.id,
+      data: { sdp: { type: offer.type, sdp: offer.sdp } },
+    });
+  } catch (error) {
+    closeCall({ message: 'Camera or microphone is unavailable.' });
+  }
+};
+
+socket.on('call:invite', (payload = {}) => {
+  const from = String(payload.from || '');
+
+  if (!from || !payload.callId) {
+    return;
+  }
+
+  if (activeCall) {
+    socket.emit('call:reject', { to: from, callId: payload.callId });
+    return;
+  }
+
+  activeCall = {
+    id: payload.callId,
+    peerId: from,
+    role: 'callee',
+    pc: null,
+    stream: null,
+    pendingIce: [],
+    pendingSignals: [],
+    remoteDescSet: false,
+  };
+
+  callOverlay.hidden = false;
+  acceptCall.hidden = false;
+  rejectCall.hidden = false;
+  hangupCall.hidden = true;
+  callLabel.textContent = `${userNameFor(from)} is calling\u2026`;
+  callError.textContent = '';
+  chatError.textContent = '';
+  updateCallButton();
+});
+
+socket.on('call:accept', (payload = {}) => {
+  if (!activeCall || payload.callId !== activeCall.id) {
+    return;
+  }
+
+  clearTimeout(ringTimer);
+  callLabel.textContent = 'Connecting\u2026';
+});
+
+socket.on('call:reject', (payload = {}) => {
+  if (!activeCall || (payload.callId && payload.callId !== activeCall.id)) {
+    return;
+  }
+
+  closeCall({ message: 'Call declined.' });
+});
+
+socket.on('call:hangup', (payload = {}) => {
+  if (!activeCall || (payload.callId && payload.callId !== activeCall.id)) {
+    return;
+  }
+
+  closeCall({ message: 'Call ended.' });
+});
+
+socket.on('call:signal', (payload = {}) => {
+  if (!activeCall || payload.callId !== activeCall.id) {
+    return;
+  }
+
+  handleSignal(payload.data).catch(() => {
+    closeCall({ message: 'Call failed.' });
+  });
+});
+
+callButton.addEventListener('click', startVideoCall);
+
+acceptCall.addEventListener('click', async () => {
+  if (!activeCall) {
+    return;
+  }
+
+  acceptCall.hidden = true;
+  rejectCall.hidden = true;
+  hangupCall.hidden = false;
+  callLabel.textContent = `Connecting to ${userNameFor(activeCall.peerId)}\u2026`;
+  chatError.textContent = '';
+
+  try {
+    await ensureLocalMedia();
+    createPeerConnection();
+    socket.emit('call:accept', { to: activeCall.peerId, callId: activeCall.id });
+
+    const queued = activeCall.pendingSignals.splice(0);
+
+    for (const item of queued) {
+      await handleSignal(item);
+    }
+
+    await flushPendingIce();
+  } catch (error) {
+    closeCall({ message: 'Camera or microphone is unavailable.', notifyPeer: true });
+  }
+});
+
+rejectCall.addEventListener('click', () => {
+  if (!activeCall) {
+    return;
+  }
+
+  socket.emit('call:reject', { to: activeCall.peerId, callId: activeCall.id });
+  closeCall({ message: 'Call declined.' });
+});
+
+hangupCall.addEventListener('click', () => {
+  closeCall({ message: 'Call ended.', notifyPeer: true });
 });
 
 loadUsers();

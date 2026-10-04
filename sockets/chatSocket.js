@@ -87,6 +87,26 @@ const registerChatSocket = (io) => {
       });
     });
 
+    // WebRTC needs a signalling channel: we relay offers, answers, ICE candidates
+    // and call control between the two peers without inspecting their payload.
+    const relayCallEvent = (clientEvent, serverEvent) => {
+      socket.on(clientEvent, (payload = {}) => {
+        const { to } = payload;
+
+        if (!to || !mongoose.isValidObjectId(to) || String(to) === String(socket.userId)) {
+          return;
+        }
+
+        emitToUser(io, to, serverEvent, { ...payload, from: socket.userId });
+      });
+    };
+
+    relayCallEvent('call:invite', 'call:invite');
+    relayCallEvent('call:accept', 'call:accept');
+    relayCallEvent('call:reject', 'call:reject');
+    relayCallEvent('call:hangup', 'call:hangup');
+    relayCallEvent('call:signal', 'call:signal');
+
     // Anything that was only "sent" while this user was offline is now delivered.
     markMessagesDelivered({ viewerId: socket.userId })
       .then(({ messageIds, senderIds }) => {

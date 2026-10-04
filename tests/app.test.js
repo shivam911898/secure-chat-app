@@ -50,12 +50,18 @@ const connectSocket = (token) =>
       transports: ['websocket'],
       reconnection: false,
     });
-    const received = { messages: [], statuses: [], typing: [], presence: [] };
+    const received = { messages: [], statuses: [], typing: [], presence: [], calls: [] };
 
     socket.on('messageReceived', (payload) => received.messages.push(payload));
     socket.on('messageStatus', (payload) => received.statuses.push(payload));
     socket.on('typing', (payload) => received.typing.push(payload));
     socket.on('presenceUpdate', (payload) => received.presence.push(payload));
+
+    ['call:invite', 'call:accept', 'call:reject', 'call:hangup', 'call:signal'].forEach(
+      (event) => {
+        socket.on(event, (payload) => received.calls.push({ event, payload }));
+      },
+    );
 
     const connectTimeout = setTimeout(() => reject(new Error('socket connect timeout')), 5000);
 
@@ -173,9 +179,29 @@ describe('authentication', () => {
 });
 
 describe('users', () => {
-  test('lists other users but never yourself', async () => {
+  test('never lists yourself', async () => {
     const me = await registerUser('viewer');
-    const other = await registerUser('someone');
+
+    const res = await request(BASE_URL)
+      .get('/api/users')
+      .set('Authorization', `Bearer ${me.token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.map((user) => user.email)).not.toContain(me.user.email);
+  });
+});
+
+describe('contact privacy and people search', () => {
+  test('the default list only contains people you have messaged', async () => {
+    const me = await registerUser('private');
+    const stranger = await registerUser('stranger');
+    const contact = await registerUser('contact');
+
+    await request(BASE_URL)
+      .post('/api/messages')
+      .set('Authorization', `Bearer ${me.token}`)
+      .send({ receiverId: contact.user.id, message: 'hello contact' })
+      .expect(201);
 
     const res = await request(BASE_URL)
       .get('/api/users')
@@ -183,8 +209,56 @@ describe('users', () => {
 
     expect(res.status).toBe(200);
     const emails = res.body.map((user) => user.email);
-    expect(emails).toContain(other.user.email);
+    expect(emails).toContain(contact.user.email);
+    expect(emails).not.toContain(stranger.user.email);
+  });
+
+  test('search needs two characters and only matches what you type', async () => {
+    const me = await registerUser('searcher');
+    const target = await registerUser('zebrafinder');
+
+    const tooShort = await request(BASE_URL)
+      .get('/api/users?search=Z')
+      .set('Authorization', `Bearer ${me.token}`);
+    expect(tooShort.status).toBe(200);
+    expect(tooShort.body).toEqual([]);
+
+    const res = await request(BASE_URL)
+      .get('/api/users?search=zebra')
+      .set('Authorization', `Bearer ${me.token}`);
+
+    expect(res.status).toBe(200);
+    const emails = res.body.map((user) => user.email);
+    expect(emails).toContain(target.user.email);
     expect(emails).not.toContain(me.user.email);
+  });
+
+  test('search results are capped', async () => {
+    const me = await registerUser('capper');
+
+    for (let i = 0; i < 12; i += 1) {
+      await registerUser('commonprefix');
+    }
+
+    const res = await request(BASE_URL)
+      .get('/api/users?search=commonprefix')
+      .set('Authorization', `Bearer ${me.token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.length).toBeGreaterThan(0);
+    expect(res.body.length).toBeLessThanOrEqual(10);
+  });
+
+  test('search treats regex characters as plain text', async () => {
+    const me = await registerUser('regexuser');
+
+    const res = await request(BASE_URL)
+      .get('/api/users?search=.*')
+      .set('Authorization', `Bearer ${me.token}`);
+
+    // "\.\*" must be escaped, so nothing matches instead of "everything".
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
   });
 });
 
@@ -409,5 +483,124 @@ describe('realtime', () => {
     expect(offline.userId).toBe(grace.user.id);
 
     viewerSocket.socket.close();
+  });
+});
+
+describe('video call signalling', () => {
+  let alice;
+  let bob;
+  let aliceSocket;
+  let bobSocket;
+
+  beforeAll(async () => {
+    alice = await registerUser('call-alice');
+    bob = await registerUser('call-bob');
+    aliceSocket = await connectSocket(alice.token);
+    bobSocket = await connectSocket(bob.token);
+  });
+
+  afterAll(() => {
+    aliceSocket.socket.close();
+    bobSocket.socket.close();
+  });
+
+  test('relays an invite to the callee with the caller id', async () => {
+    aliceSocket.socket.emit('call:invite', { to: bob.user.id, callId: 'call-1' });
+
+    const invite = await waitFor(
+      () => bobSocket.received.calls.find((item) => item.event === 'call:invite'),
+      5000,
+      'the call invite',
+    );
+
+    expect(invite.payload.from).toBe(alice.user.id);
+    expect(invite.payload.callId).toBe('call-1');
+  });
+
+  test('relays SDP offers and answers in both directions', async () => {
+    aliceSocket.socket.emit('call:signal', {
+      to: bob.user.id,
+      callId: 'call-1',
+      data: { sdp: { type: 'offer', sdp: 'v=0\\r\\n' } },
+    });
+
+    const offer = await waitFor(
+      () =>
+        bobSocket.received.calls.find(
+          (item) => item.event === 'call:signal' && item.payload.data.sdp,
+        ),
+      5000,
+      'the offer',
+    );
+    expect(offer.payload.data.sdp.type).toBe('offer');
+    expect(offer.payload.from).toBe(alice.user.id);
+
+    bobSocket.socket.emit('call:signal', {
+      to: alice.user.id,
+      callId: 'call-1',
+      data: { sdp: { type: 'answer', sdp: 'v=0' } },
+    });
+
+    const answer = await waitFor(
+      () =>
+        aliceSocket.received.calls.find(
+          (item) =>
+            item.event === 'call:signal' &&
+            item.payload.data.sdp &&
+            item.payload.data.sdp.type === 'answer',
+        ),
+      5000,
+      'the answer',
+    );
+    expect(answer.payload.from).toBe(bob.user.id);
+  });
+
+  test('relays ICE candidates, accept and hangup', async () => {
+    aliceSocket.socket.emit('call:signal', {
+      to: bob.user.id,
+      callId: 'call-1',
+      data: { candidate: { candidate: 'candidate:1 1 udp 2122260223 192.0.2.1 54400 typ host' } },
+    });
+
+    const ice = await waitFor(
+      () =>
+        bobSocket.received.calls.find(
+          (item) => item.event === 'call:signal' && item.payload.data.candidate,
+        ),
+      5000,
+      'the ICE candidate',
+    );
+    expect(ice.payload.data.candidate.candidate).toContain('typ host');
+
+    bobSocket.socket.emit('call:accept', { to: alice.user.id, callId: 'call-1' });
+    const accepted = await waitFor(
+      () => aliceSocket.received.calls.find((item) => item.event === 'call:accept'),
+      5000,
+      'the accept',
+    );
+    expect(accepted.payload.from).toBe(bob.user.id);
+
+    aliceSocket.socket.emit('call:hangup', { to: bob.user.id, callId: 'call-1' });
+    const ended = await waitFor(
+      () => bobSocket.received.calls.find((item) => item.event === 'call:hangup'),
+      5000,
+      'the hangup',
+    );
+    expect(ended.payload.from).toBe(alice.user.id);
+  });
+
+  test('drops signals addressed to yourself or an invalid id', async () => {
+    const before = bobSocket.received.calls.length;
+
+    aliceSocket.socket.emit('call:invite', { to: alice.user.id, callId: 'self-call' });
+    aliceSocket.socket.emit('call:invite', { to: 'not-an-object-id', callId: 'bad-call' });
+
+    await sleep(400);
+
+    expect(bobSocket.received.calls.length).toBe(before);
+    const leaked = aliceSocket.received.calls.filter(
+      (item) => item.payload.callId === 'self-call' || item.payload.callId === 'bad-call',
+    );
+    expect(leaked).toHaveLength(0);
   });
 });

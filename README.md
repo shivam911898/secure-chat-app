@@ -7,10 +7,13 @@ Beginner-friendly secure real-time one-to-one chat application built with Common
 - User registration and login with JWT authentication
 - Password hashing using `bcryptjs`
 - Protected REST APIs
-- User list excluding logged-in user
+- Contacts-only user list: nobody can enumerate every account
+- People search to start a new chat on purpose (`?search=`)
 - One-to-one real-time messaging via Socket.IO
 - Cursor-based pagination with infinite scroll for long conversations
+- Search inside the conversation you have open
 - Typing indicators and online/offline presence
+- Peer-to-peer video and audio calls (WebRTC, relayed signalling)
 - Persistent conversation history in MongoDB
 - Message encryption at rest using AES-256-GCM (server-side)
 - Unread-message badge for chats that are not open
@@ -152,7 +155,10 @@ All protected endpoints require an `Authorization` header containing a JWT in th
 ### Users
 
 - `GET /api/users`
-  - returns all users except the authenticated user
+  - returns **only people you have exchanged messages with**, most recent first
+- `GET /api/users?search=ali`
+  - returns matching accounts (2+ characters) so a new chat can be started
+    deliberately; results are capped at 10 and regex characters are escaped
 
 ### Messages
 
@@ -193,6 +199,26 @@ How the transitions happen:
 
 Incoming messages for a conversation that is not open increment an unread badge in
 the sidebar; opening or receiving in the open chat clears it.
+
+## Video Calls
+
+Calls are peer-to-peer WebRTC; the server only relays signalling (`call:invite`,
+`call:accept`, `call:reject`, `call:hangup`, `call:signal`) between the two
+peers and never sees the media.
+
+1. The caller clicks **Video call** (enabled only when the other person is online)
+   and grants camera/microphone access.
+2. The callee sees an incoming call with **Accept** / **Decline**.
+3. Offer, answer and ICE candidates are relayed over the existing socket.
+4. **Hang up** stops the tracks on both sides.
+
+Requirements and limits:
+
+- A camera/microphone permission prompt must be accepted; calls need a secure
+  context, which Render (HTTPS) and `localhost` provide.
+- Only a public STUN server is configured, so restrictive NATs may fail to
+  connect. Adding a TURN server would fix that.
+- Ring timeout is 30 seconds; if the peer is offline the call button is disabled.
 
 ## JWT Authentication (Simple Explanation)
 

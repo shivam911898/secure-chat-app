@@ -10,18 +10,50 @@
     <main class="chat-layout">
       <aside class="sidebar card">
         <div class="sidebar-header">
-          <h2>Users</h2>
+          <h2>Chats</h2>
           <button id="logoutButton" class="secondary">Logout</button>
         </div>
         <p id="currentUser" class="subtitle"></p>
+        <input
+          id="userSearch"
+          class="search-input"
+          type="search"
+          placeholder="Search people..."
+          autocomplete="off"
+        />
+        <p id="userListHint" class="subtitle" hidden>
+          No chats yet. Search above to find someone.
+        </p>
         <ul id="usersList" class="users-list"></ul>
       </aside>
 
       <section class="chat-panel card">
         <header class="chat-header">
-          <h2 id="selectedUserName">Select a user to start chatting</h2>
-          <p id="chatStatus" class="chat-status"></p>
+          <div class="chat-heading">
+            <h2 id="selectedUserName">Select a user to start chatting</h2>
+            <p id="chatStatus" class="chat-status"></p>
+          </div>
+          <button
+            id="callButton"
+            class="call-button"
+            type="button"
+            title="Start video call"
+            disabled
+          >
+            Video call
+          </button>
         </header>
+
+        <div class="message-search">
+          <input
+            id="messageSearch"
+            class="search-input"
+            type="search"
+            placeholder="Search in this conversation..."
+            autocomplete="off"
+          />
+          <span id="searchMeta" class="search-meta"></span>
+        </div>
 
         <div id="messages" class="messages"></div>
 
@@ -32,6 +64,22 @@
         <p id="chatError" class="error"></p>
       </section>
     </main>
+
+    <div id="callOverlay" class="call-overlay" hidden>
+      <div class="call-box card">
+        <p id="callLabel" class="call-label">Starting call…</p>
+        <div class="call-videos">
+          <video id="localVideo" autoplay playsinline muted></video>
+          <video id="remoteVideo" autoplay playsinline></video>
+        </div>
+        <div class="call-actions">
+          <button id="acceptCall" type="button" hidden>Accept</button>
+          <button id="rejectCall" class="secondary" type="button" hidden>Decline</button>
+          <button id="hangupCall" class="danger" type="button" hidden>Hang up</button>
+        </div>
+        <p id="callError" class="error"></p>
+      </div>
+    </div>
 
     <script src="/socket.io/socket.io.js"></script>
     <script src="/js/chat.js"></script>

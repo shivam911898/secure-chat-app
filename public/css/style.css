@@ -130,6 +130,112 @@ button:hover {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 12px;
+  gap: 10px;
+}
+
+.chat-heading {
+  min-width: 0;
+}
+
+.search-input {
+  width: 100%;
+  margin-top: 10px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  font-size: 14px;
+}
+
+.message-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.message-search .search-input {
+  flex: 1;
+}
+
+.search-meta {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.call-button {
+  width: auto;
+  padding: 9px 14px;
+  font-size: 14px;
+  background: #16a34a;
+}
+
+.call-button:hover:not(:disabled) {
+  background: #12813b;
+}
+
+.call-button:disabled {
+  background: #cbd5e1;
+  cursor: not-allowed;
+}
+
+.danger {
+  background: var(--error);
+}
+
+.danger:hover {
+  background: #b3261b;
+}
+
+.call-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.72);
+  z-index: 20;
+}
+
+.call-overlay[hidden] {
+  display: none;
+}
+
+.call-box {
+  width: min(760px, 94vw);
+  padding: 18px;
+  text-align: center;
+}
+
+.call-label {
+  font-size: 17px;
+  font-weight: bold;
+  margin-bottom: 12px;
+}
+
+.call-videos {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.call-videos video {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  background: #0f172a;
+  border-radius: 10px;
+  object-fit: cover;
+}
+
+.call-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.call-actions button {
+  width: auto;
+  min-width: 110px;
 }
 
 .users-list {
@@ -263,5 +369,9 @@ button:hover {
 
   .messages {
     height: 50vh;
+  }
+
+  .call-videos {
+    grid-template-columns: 1fr;
   }
 }
